@@ -1,0 +1,49 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Rust / Tauri
+src-tauri/target
+src-tauri/gen
+
+# Grafo de conocimiento (generado)
+graphify-out
+
+# Estado local de la app
+*.db
+*.db-wal
+*.db-shm
+state.json
+state.json.migrated
+
+# macOS
+.DS_Store
+
+# Listas de precios de proveedores (datos de negocio — no publicar)
+data/raw/*.xlsx
+data/raw/*.md
+src-tauri/tests/fixtures/lista_cva.xls
+
+# Semilla del catálogo (precios de proveedores — genera la tuya con el script)
+data/catalog_seed.json

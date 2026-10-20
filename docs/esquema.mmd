@@ -1,0 +1,108 @@
+erDiagram
+    PRODUCTS {
+        TEXT id PK "UUID estable"
+        TEXT sku UK "Codigo de Fabricante (SKU mandatorio)"
+        TEXT barcode
+        TEXT description "Titulo unico normalizado"
+        INTEGER brand_id FK
+        INTEGER department_id FK
+        TEXT kind "cpu | motherboard | ram | storage | psu | case | ..."
+        TEXT condition "nuevo | usado"
+        TEXT specs "JSON (diseno acordado): socket, ddr, form_factor, wattage..."
+        TEXT updated_at
+    }
+
+    BRANDS {
+        INTEGER id PK
+        TEXT name UK "Catalogo para filtros"
+    }
+
+    DEPARTMENTS {
+        INTEGER id PK
+        TEXT name UK "Catalogo para filtros"
+    }
+
+    SUPPLIERS {
+        TEXT id PK "arroba | cva | manual"
+        TEXT name
+    }
+
+    PRODUCT_OFFERS {
+        TEXT sku PK,FK "products.sku"
+        TEXT supplier PK,FK "suppliers.id"
+        TEXT barcode "UPC por proveedor"
+        TEXT price_amount "Precio de ESTE proveedor"
+        TEXT price_currency "USD | MXP"
+        INTEGER on_promotion
+        INTEGER cd_only "1 = solo Disp CD (CVA)"
+        TEXT updated_at
+    }
+
+    WAREHOUSES {
+        INTEGER id PK
+        TEXT name UK "a_cen | ave_2 | cedis | cmal | gdl | disp | disp_cd"
+    }
+
+    OFFER_STOCK {
+        TEXT sku PK,FK
+        TEXT supplier PK,FK
+        INTEGER warehouse_id PK,FK
+        INTEGER quantity "Existencia por almacen"
+    }
+
+    ASSEMBLIES {
+        TEXT id PK "UUID"
+        TEXT name
+        TEXT quote_type "preensamble | personalizado"
+        INTEGER in_fabrication
+        TEXT quote_number UK "DDMMAA-NC"
+        TEXT based_on "Origen de personalizados"
+    }
+
+    ASSEMBLY_ITEMS {
+        TEXT assembly_id PK,FK
+        TEXT slot PK "cpu | motherboard | ram..."
+        TEXT component_id PK,FK "products.id"
+        INTEGER quantity
+        TEXT supplier "Proveedor elegido (null = mejor precio)"
+    }
+
+    SALE_NOTES {
+        TEXT number PK "DDMMAAAA-NC"
+        TEXT quote_number "Cotizacion ligada"
+        TEXT assembly_id FK "NULL = venta individual"
+        TEXT created_at
+    }
+
+    SALE_NOTE_LINES {
+        TEXT number PK,FK
+        INTEGER line_no PK
+        TEXT component_id
+        TEXT sku "Snapshot"
+        TEXT description "Snapshot congelado"
+        TEXT kind
+        TEXT serial "Numero de serie"
+        TEXT price_amount "Snapshot congelado"
+    }
+
+    COUNTERS {
+        TEXT scope PK "quote | sale_note"
+        TEXT day PK
+        INTEGER value
+    }
+
+    SETTINGS {
+        TEXT key PK "list_rate | rate_override | zai_api_key..."
+        TEXT value
+    }
+
+    PRODUCTS ||--o{ PRODUCT_OFFERS : "mismo SKU en varios proveedores"
+    BRANDS ||--o{ PRODUCTS : ""
+    DEPARTMENTS ||--o{ PRODUCTS : ""
+    PRODUCT_OFFERS ||--o{ OFFER_STOCK : "existencias por almacen"
+    WAREHOUSES ||--o{ OFFER_STOCK : ""
+    SUPPLIERS ||--o{ PRODUCT_OFFERS : ""
+    ASSEMBLIES ||--o{ ASSEMBLY_ITEMS : "partidas (3FN)"
+    PRODUCTS ||--o{ ASSEMBLY_ITEMS : ""
+    ASSEMBLIES ||--o{ SALE_NOTES : "flujo 1: ensambles"
+    SALE_NOTES ||--o{ SALE_NOTE_LINES : "renglones (3FN, snapshot)"
