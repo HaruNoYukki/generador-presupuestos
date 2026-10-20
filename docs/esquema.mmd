@@ -1,14 +1,18 @@
+# Esquema de la base de datos (SQLite) — versión 6
+
+```mermaid
 erDiagram
     PRODUCTS {
-        TEXT id PK "UUID estable"
+        TEXT id PK "UUID estable (no cambia al actualizar por SKU)"
         TEXT sku UK "Codigo de Fabricante (SKU mandatorio)"
         TEXT barcode
         TEXT description "Titulo unico normalizado"
-        INTEGER brand_id FK
-        INTEGER department_id FK
-        TEXT kind "cpu | motherboard | ram | storage | psu | case | ..."
+        INTEGER brand_id FK "Catalogo de marcas"
+        INTEGER department_id FK "Catalogo de departamentos"
+        TEXT kind "cpu | motherboard | ram | storage | psu | case | cooler_air | cooler_liquid | gpu | monitor | keyboard | mouse | keyboard_mouse_kit | expansion_card | other"
         TEXT condition "nuevo | usado"
-        TEXT specs "JSON (diseno acordado): socket, ddr, form_factor, wattage..."
+        TEXT specs "JSON (diseno acordado): socket, ddr, form_factor, wattage, includes_psu, includes_cooler, ram_form, capacity..."
+        TEXT title_source "raw | ai (normalizacion de titulos con IA)"
         TEXT updated_at
     }
 
@@ -53,10 +57,12 @@ erDiagram
     ASSEMBLIES {
         TEXT id PK "UUID"
         TEXT name
+        TEXT created_at "Base de la vigencia"
         TEXT quote_type "preensamble | personalizado"
-        INTEGER in_fabrication
+        INTEGER in_fabrication "1 = no caduca, puede vender"
         TEXT quote_number UK "DDMMAA-NC"
         TEXT based_on "Origen de personalizados"
+        TEXT confirmed_at
     }
 
     ASSEMBLY_ITEMS {
@@ -87,22 +93,38 @@ erDiagram
 
     COUNTERS {
         TEXT scope PK "quote | sale_note"
-        TEXT day PK
-        INTEGER value
+        TEXT day PK "YYYY-MM-DD"
+        INTEGER value "Consecutivo del dia"
     }
 
     SETTINGS {
-        TEXT key PK "list_rate | rate_override | zai_api_key..."
+        TEXT key PK "list_rate | rate_override | zai_api_key | list_date | source_file"
         TEXT value
     }
 
     PRODUCTS ||--o{ PRODUCT_OFFERS : "mismo SKU en varios proveedores"
     BRANDS ||--o{ PRODUCTS : ""
     DEPARTMENTS ||--o{ PRODUCTS : ""
+    SUPPLIERS ||--o{ PRODUCT_OFFERS : ""
     PRODUCT_OFFERS ||--o{ OFFER_STOCK : "existencias por almacen"
     WAREHOUSES ||--o{ OFFER_STOCK : ""
-    SUPPLIERS ||--o{ PRODUCT_OFFERS : ""
     ASSEMBLIES ||--o{ ASSEMBLY_ITEMS : "partidas (3FN)"
     PRODUCTS ||--o{ ASSEMBLY_ITEMS : ""
     ASSEMBLIES ||--o{ SALE_NOTES : "flujo 1: ensambles"
     SALE_NOTES ||--o{ SALE_NOTE_LINES : "renglones (3FN, snapshot)"
+```
+
+## Notas de diseño
+
+- **3FN/BCNF**: marcas, departamentos, almacenes y proveedores son tablas
+  catálogo; las partidas de ensamble y los renglones de nota son tablas
+  hijas. La única excepción acordada es `products.specs`, que permanece en
+  JSON por ser atributos heterogéneos según el tipo de producto.
+- **SKU como índice**: `products.sku` es UNIQUE y `product_offers` usa la
+  clave compuesta `(sku, supplier)` — el mismo SKU puede existir en varios
+  proveedores con precios y existencias distintos.
+- **Snapshots**: `sale_note_lines` congela descripción y precio al momento
+  de la venta (correcto contablemente), aunque `products` cambie después.
+- **Stock por flujo**: `offer_stock.stock_ensamble` (arroba: CEN+AVE-2+CEDIS;
+  CVA: Disp) y `offer_stock.stock_individual` (arroba: igual; CVA:
+  Disp + Disp CD).
