@@ -18,7 +18,7 @@ use crate::catalog::{Catalog, CatalogSeed, NewComponentInput};
 use crate::db;
 use crate::domain::assembly::{self, Assembly, ComponentLookup, QuoteType, Slot};
 use crate::domain::component::Component;
-use crate::domain::money::ExchangeRate;
+use crate::domain::money::{ExchangeRate, Money};
 
 #[derive(Debug, Default, Deserialize)]
 struct LegacyState {
@@ -544,17 +544,39 @@ impl AppState {
                 chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
             ));
         }
-        // Validación explícita: el SKU es índice mandatorio y no puede
-        // repetirse. Sin este check, el upsert haría merge silencioso
-        // pisando los datos del maestro existente.
         let sku = input.sku.clone().unwrap();
+
+        // Regla multi-proveedor: si el SKU YA existe, una captura PCH no
+        // crea un producto nuevo ni toca el maestro — registra/actualiza
+        // SOLAMENTE la oferta PCH (precio + existencia). Una captura
+        // manual genérica sobre un SKU existente sí se rechaza.
         if let Some(existing) = self.find_by_sku(&sku) {
-            return Err(format!(
-                "El SKU {} ya existe (proveedor {}). Si quieres actualizarlo, edítalo desde el catálogo.",
-                sku,
-                if existing.supplier.is_empty() { "sin proveedor" } else { &existing.supplier }
-            ));
+            if !es_pch {
+                return Err(format!(
+                    "El SKU {} ya existe (proveedor {}). Si quieres actualizarlo, edítalo desde el catálogo.",
+                    sku,
+                    if existing.supplier.is_empty() { "sin proveedor" } else { &existing.supplier }
+                ));
+            }
+            let precio = rust_decimal::Decimal::from_str_exact(&input.price_amount)
+                .map_err(|_| format!("Precio inválido: {}", input.price_amount))?;
+            let mut oferta_pch = existing.clone();
+            oferta_pch.supplier = "pch".into();
+            oferta_pch.price = Money::new(precio, input.price_currency);
+            oferta_pch.on_promotion = false;
+            oferta_pch.offer_stocks.clear();
+            if existencia > 0 {
+                oferta_pch.offer_stocks.insert("pch_existencia".into(), existencia);
+            }
+            oferta_pch.stock_ensamble_total = existencia;
+            oferta_pch.stock_individual_total = existencia;
+            oferta_pch.cd_only_best = false;
+            db::upsert_offer(&self.db, &oferta_pch).map_err(|e| e.to_string())?;
+            return self
+                .find_by_sku(&sku)
+                .ok_or_else(|| "No se pudo recargar la oferta".to_string());
         }
+
         let mut c = self.catalog.add_manual(input).map_err(|e| e.to_string())?;
         // Captura manual de proveedor: 'pch' (sin Excel, existencia a mano)
         // o 'manual' genérico.
@@ -1150,10 +1172,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// Alta manual con SKU duplicado: rechazada con error explícito y sin
-    /// modificar el producto original (el upsert no llega a ejecutarse).
+    /// Reglas de alta manual sobre SKUs existentes:
+    /// - PCH sobre SKU existente → registra/actualiza SOLO su oferta
+    ///   (precio + existencia), maestro intacto.
+    /// - Captura manual genérica sobre SKU existente → rechazada.
     #[test]
-    fn manual_sku_cannot_repeat() {
+    fn manual_sku_rules_over_existing() {
         let dir = temp_dir();
         let mut state = AppState::load(Some(SEED), dir.clone());
         let base = NewComponentInput {
@@ -1168,8 +1192,9 @@ mod tests {
             supplier: Some("pch".into()),
             stock: Some(2),
         };
-        state.add_manual_component(base.clone()).expect("primera alta");
+        state.add_manual_component(base.clone()).expect("primera alta PCH");
 
+        // Manual genérico sobre el mismo SKU → rechazada
         let err = state
             .add_manual_component(NewComponentInput {
                 description: "PROCESADOR PCH DISTINTO".into(),
@@ -1180,25 +1205,46 @@ mod tests {
                 price_currency: crate::domain::money::Currency::Mxp,
                 condition: crate::domain::component::Condition::Nuevo,
                 specs: crate::domain::component::Specs::default(),
-                supplier: Some("pch".into()),
-                stock: Some(9),
+                supplier: None,
+                stock: None,
             })
             .unwrap_err();
         assert!(err.contains("DUP-1") && err.contains("ya existe"), "err: {err}");
 
-        // El original no fue modificado por el intento duplicado
-        let saved = state.find_by_sku("DUP-1").expect("existe");
-        assert_eq!(saved.description, "PROCESADOR PCH UNO");
-        assert_eq!(saved.price.amount.to_string(), "4200");
-        assert_eq!(saved.stock_ensamble_total, 2);
+        // PCH sobre SKU existente → actualiza SOLO su oferta PCH
+        let updated = state
+            .add_manual_component(NewComponentInput {
+                description: "PROCESADOR PCH UNO (actualizado)".into(),
+                sku: base.sku.clone(),
+                brand: Some("INTEL".into()),
+                kind: crate::domain::component::ComponentKind::Cpu,
+                price_amount: "3900".into(),
+                price_currency: crate::domain::money::Currency::Mxp,
+                condition: crate::domain::component::Condition::Nuevo,
+                specs: crate::domain::component::Specs::default(),
+                supplier: Some("pch".into()),
+                stock: Some(7),
+            })
+            .expect("PCH sobre SKU existente registra su oferta");
 
-        // Persistido tras recargar: una sola fila con ese SKU
+        // Maestro intacto (no lo pisa la recaptura)
+        assert_eq!(updated.description, "PROCESADOR PCH UNO");
+        // Oferta PCH: precio y existencia actualizados
+        let pch_offer = updated.offers.iter().find(|o| o.supplier == "pch").expect("oferta PCH");
+        assert_eq!(pch_offer.price.amount.to_string(), "3900");
+        assert_eq!(pch_offer.stock_individual, 7);
+        assert_eq!(updated.stock_individual_total, 7);
+
+        // Persistido tras recargar
         let reloaded = AppState::load(Some(SEED), dir.clone());
-        assert_eq!(reloaded.find_by_sku("DUP-1").unwrap().description, "PROCESADOR PCH UNO");
+        let saved = reloaded.find_by_sku("DUP-1").unwrap();
+        let pch = saved.offers.iter().find(|o| o.supplier == "pch").unwrap();
+        assert_eq!(pch.price.amount.to_string(), "3900");
+        assert_eq!(pch.stock_individual, 7);
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// El state.json legacy se migra a SQLite una sola vez.
+    /// El state.json legacy se migra a SQLite una sola vez.    /// El state.json legacy se migra a SQLite una sola vez.
     #[test]
     fn legacy_state_json_migrates_once() {
         let dir = temp_dir();

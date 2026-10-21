@@ -89,6 +89,9 @@ nuevo que traigan.
   - Venta individual: arroba → igual; CVA → **Disp + Disp CD**.
 - Los artículos **solo-CD** (CVA) van bloqueados en el picker de ensambles
   con la marca "SOLO CD · no ensamble".
+- **Captura PCH sobre un SKU existente**: registra/actualiza únicamente la
+  oferta PCH (precio y existencia) sin tocar el maestro — el alta manual
+  genérica sobre un SKU existente se rechaza.
 - En el picker puedes **ver los precios de los demás proveedores** y
   cambiar de proveedor en cualquier partida sin importar quién sea el más
   barato.
