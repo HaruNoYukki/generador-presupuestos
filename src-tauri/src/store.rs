@@ -534,6 +534,27 @@ impl AppState {
     pub fn add_manual_component(&mut self, input: NewComponentInput) -> Result<Component, String> {
         let existencia = input.stock.unwrap_or(0);
         let es_pch = input.supplier.as_deref() == Some("pch");
+        let mut input = input;
+        // SKU autogenerado con prefijo del proveedor si viene vacío
+        if input.sku.as_deref().map_or(true, |s| s.trim().is_empty()) {
+            let prefix = if es_pch { "PCH" } else { "MANUAL" };
+            input.sku = Some(format!(
+                "{}-{}",
+                prefix,
+                chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
+            ));
+        }
+        // Validación explícita: el SKU es índice mandatorio y no puede
+        // repetirse. Sin este check, el upsert haría merge silencioso
+        // pisando los datos del maestro existente.
+        let sku = input.sku.clone().unwrap();
+        if let Some(existing) = self.find_by_sku(&sku) {
+            return Err(format!(
+                "El SKU {} ya existe (proveedor {}). Si quieres actualizarlo, edítalo desde el catálogo.",
+                sku,
+                if existing.supplier.is_empty() { "sin proveedor" } else { &existing.supplier }
+            ));
+        }
         let mut c = self.catalog.add_manual(input).map_err(|e| e.to_string())?;
         // Captura manual de proveedor: 'pch' (sin Excel, existencia a mano)
         // o 'manual' genérico.
@@ -1126,6 +1147,54 @@ mod tests {
             })
             .unwrap();
         assert_eq!(manual.supplier, "manual");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Alta manual con SKU duplicado: rechazada con error explícito y sin
+    /// modificar el producto original (el upsert no llega a ejecutarse).
+    #[test]
+    fn manual_sku_cannot_repeat() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let base = NewComponentInput {
+            description: "PROCESADOR PCH UNO".into(),
+            sku: Some("DUP-1".into()),
+            brand: Some("INTEL".into()),
+            kind: crate::domain::component::ComponentKind::Cpu,
+            price_amount: "4200".into(),
+            price_currency: crate::domain::money::Currency::Mxp,
+            condition: crate::domain::component::Condition::Nuevo,
+            specs: crate::domain::component::Specs::default(),
+            supplier: Some("pch".into()),
+            stock: Some(2),
+        };
+        state.add_manual_component(base.clone()).expect("primera alta");
+
+        let err = state
+            .add_manual_component(NewComponentInput {
+                description: "PROCESADOR PCH DISTINTO".into(),
+                sku: base.sku.clone(),
+                brand: None,
+                kind: crate::domain::component::ComponentKind::Cpu,
+                price_amount: "999".into(),
+                price_currency: crate::domain::money::Currency::Mxp,
+                condition: crate::domain::component::Condition::Nuevo,
+                specs: crate::domain::component::Specs::default(),
+                supplier: Some("pch".into()),
+                stock: Some(9),
+            })
+            .unwrap_err();
+        assert!(err.contains("DUP-1") && err.contains("ya existe"), "err: {err}");
+
+        // El original no fue modificado por el intento duplicado
+        let saved = state.find_by_sku("DUP-1").expect("existe");
+        assert_eq!(saved.description, "PROCESADOR PCH UNO");
+        assert_eq!(saved.price.amount.to_string(), "4200");
+        assert_eq!(saved.stock_ensamble_total, 2);
+
+        // Persistido tras recargar: una sola fila con ese SKU
+        let reloaded = AppState::load(Some(SEED), dir.clone());
+        assert_eq!(reloaded.find_by_sku("DUP-1").unwrap().description, "PROCESADOR PCH UNO");
         let _ = std::fs::remove_dir_all(dir);
     }
 

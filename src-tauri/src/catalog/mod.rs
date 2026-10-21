@@ -35,7 +35,7 @@ pub enum CatalogError {
 }
 
 /// Entrada para dar de alta un componente manualmente (usado o nuevo).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NewComponentInput {
     pub description: String,
     #[serde(default)]
