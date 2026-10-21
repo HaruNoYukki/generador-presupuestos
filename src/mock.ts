@@ -479,9 +479,10 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       return asDto(state.components.find((c) => c.id === args.id) ?? state.components[0]);
     case 'add_manual_component': {
       const input = args.input as Record<string, unknown>;
+      const esPch = input.supplier === 'pch';
       const c: SeedComponent = {
         id: crypto.randomUUID(),
-        sku: (input.sku as string) || `MANUAL-${Date.now()}`,
+        sku: (input.sku as string) || (esPch ? `PCH-${Date.now()}` : `MANUAL-${Date.now()}`),
         barcode: null,
         description: input.description as string,
         brand: (input.brand as string) || 'SIN MARCA',
@@ -495,6 +496,7 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
         on_promotion: false,
         stock: {},
         source: 'manual',
+        supplier: esPch ? 'pch' : 'manual',
         specs: (input.specs ?? {}) as Record<string, unknown>,
       };
       state.components.push(c);

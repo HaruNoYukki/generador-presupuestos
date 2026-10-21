@@ -3,6 +3,7 @@ import { api } from '../api';
 import { SLOTS, SlotMeta, kindLabel } from '../meta';
 import { Assembly, AssemblySummary, ComponentDto, CostBreakdown, ValidationReport } from '../types';
 import { closeModal, el, modal, mxn } from '../ui';
+import { openProductForm } from './product_form';
 
 export interface AssemblyViewDeps {
   components: ComponentDto[];
@@ -103,7 +104,10 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
           // En ensambles solo pueden usarse productos con existencia de
           // prioridad (arroba CEN/AVE-2/CEDIS o CVA Disp). Los SOLO-CD se
           // muestran bloqueados y marcados.
-          const noEnsamble = c.stock_ensamble_total === 0;
+          // Solo los SOLO-CD de CVA quedan fuera de los ensambles.
+          // Los productos PCH (capturados a mano) sí pueden usarse: se
+          // advierte su existencia al marcar 'En fabricación'.
+          const noEnsamble = c.cd_only_best === true;
           const supplierChip = el('span', { class: `chip chip-supplier supplier-${c.supplier || 'arroba'}` },
             c.supplier === 'cva' ? 'CVA' : c.supplier === 'arroba' ? '@' : 'MANUAL');
           const cdChip = c.cd_only_best || noEnsamble
@@ -212,12 +216,33 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     });
     search.addEventListener('input', drawList);
     search.addEventListener('change', drawList);
+
+    // Alta de productos desde el propio picker (p. ej. captura manual de
+    // proveedores sin Excel como PCH). Al guardar se auto-selecciona.
+    const addNewBtn = el('button', { class: 'btn btn-outline' },
+      `＋ Agregar ${slot.label.toLowerCase()} nuevo`);
+    addNewBtn.addEventListener('click', () => {
+      openProductForm({
+        title: `Agregar ${slot.label.toLowerCase()} nuevo`,
+        fixedKinds: slot.kinds,
+        defaultKind: slot.kinds[0],
+        defaultSupplier: 'pch',
+        onSaved: async (dto) => {
+          await deps.refreshComponents();
+          if (current) {
+            await mutate(api.setAssemblyItem(current.id, slot.id, dto.id, 1, dto.supplier));
+          }
+        },
+      });
+    });
+
     drawList();
     modal(
       `Elegir ${slot.label.toLowerCase()}`,
       el('div', {},
         el('div', { class: 'picker-search' }, search, clearBtn),
         el('div', { class: 'toolbar' }, el('span', { class: 'muted' }, 'Marca:'), brandSel),
+        el('div', { class: 'toolbar' }, addNewBtn),
         list),
     );
   }
@@ -386,6 +411,36 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       }
       return true;
     });
+  }
+
+  /** Advertencia de productos PCH cuando el ensamble está en fabricación:
+   * la existencia de PCH no se valida por sistema (captura a mano, sin
+   * Excel), así que hay que verificarla manualmente. */
+  function renderPchWarning() {
+    if (!current) return null;
+    const map = byId();
+    const pchItems: { description: string; sku: string }[] = [];
+    for (const items of Object.values(current.slots)) {
+      for (const item of items ?? []) {
+        const c = map.get(item.component_id);
+        if (c && c.supplier === 'pch') {
+          pchItems.push({ description: c.description, sku: c.sku });
+        }
+      }
+    }
+    if (pchItems.length === 0) return null;
+    const lineas = pchItems.map((p) =>
+      el('div', { class: 'pch-line' },
+        el('strong', {}, p.description),
+        el('span', {}, ` — Con SKU: ${p.sku} — Por favor verifica existencia`)),
+    );
+    return el('div', { class: 'pch-banner', role: 'alert' },
+      el('strong', {}, '⚠ Advertencia'),
+      el('div', {},
+        el('span', {},
+          'Este ensamble tiene el siguiente producto de PCH: '),
+        ...lineas),
+    );
   }
 
   function renderTypeBanner() {
@@ -589,6 +644,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
 
     return el('div', { class: 'filters-wrap' },
       current ? renderTypeBanner() : null,
+      current?.in_fabrication ? renderPchWarning() : null,
       el('div', { class: 'toolbar filter-bar' },
         el('label', { class: 'filter-check' }, vigenteCheck, ' Solo preensambles vigentes'),
         numberSearch,

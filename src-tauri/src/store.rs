@@ -532,18 +532,34 @@ impl AppState {
     }
 
     pub fn add_manual_component(&mut self, input: NewComponentInput) -> Result<Component, String> {
+        let existencia = input.stock.unwrap_or(0);
+        let es_pch = input.supplier.as_deref() == Some("pch");
         let mut c = self.catalog.add_manual(input).map_err(|e| e.to_string())?;
-        c.supplier = "manual".into();
-        c.stock_ensamble_total = 0;
-        c.stock_individual_total = 0;
+        // Captura manual de proveedor: 'pch' (sin Excel, existencia a mano)
+        // o 'manual' genérico.
+        c.supplier = if es_pch { "pch".into() } else { "manual".into() };
+        // SKU auto-generado con prefijo del proveedor
+        if es_pch && c.sku.starts_with("MANUAL-") {
+            c.sku = format!("PCH-{}", &c.sku["MANUAL-".len()..]);
+        }
+        c.stock_ensamble_total = existencia;
+        c.stock_individual_total = existencia;
+        c.offer_stocks.clear();
+        if es_pch && existencia > 0 {
+            c.offer_stocks.insert("pch_existencia".into(), existencia);
+        }
         c.offers = vec![crate::domain::component::Offer {
-            supplier: "manual".into(),
+            supplier: c.supplier.clone(),
             price: c.price.clone(),
             on_promotion: c.on_promotion,
-            stock_label: String::new(),
-            stocks: BTreeMap::new(),
-            stock_ensamble: 0,
-            stock_individual: 0,
+            stock_label: if es_pch {
+                format!("Existencia {existencia}")
+            } else {
+                String::new()
+            },
+            stocks: c.offer_stocks.clone(),
+            stock_ensamble: existencia,
+            stock_individual: existencia,
             cd_only: false,
         }];
         db::upsert_master(&self.db, &c, true).map_err(|e| e.to_string())?;
@@ -1044,6 +1060,72 @@ mod tests {
         assert_eq!(improved2, 3);
         assert_eq!(remaining2, total_raw as usize - 6);
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Producto PCH capturado a mano: proveedor 'pch', existencia propia,
+    /// seleccionable en ensambles y ventanas de venta sin bloqueo por stock.
+    #[test]
+    fn pch_products_roundtrip() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+
+        let c = state
+            .add_manual_component(NewComponentInput {
+                description: "PROCESADOR INTEL I5 PCH".into(),
+                sku: None,
+                brand: Some("INTEL".into()),
+                kind: crate::domain::component::ComponentKind::Cpu,
+                price_amount: "4200".into(),
+                price_currency: crate::domain::money::Currency::Mxp,
+                condition: crate::domain::component::Condition::Nuevo,
+                specs: crate::domain::component::Specs {
+                    socket: Some("LGA1700".into()),
+                    ..Default::default()
+                },
+                supplier: Some("pch".into()),
+                stock: Some(4),
+            })
+            .expect("alta PCH");
+
+        // Proveedor y existencia
+        assert_eq!(c.supplier, "pch");
+        assert_eq!(c.stock_ensamble_total, 4);
+        assert_eq!(c.stock_individual_total, 4);
+        assert!(c.sku.starts_with("PCH-"), "SKU autogenerado: {}", c.sku);
+
+        // Persistido con existencias por almacén PCH
+        let reloaded = AppState::load(Some(SEED), dir.clone());
+        let saved = reloaded.find_by_sku(&c.sku).expect("consulta por SKU");
+        assert_eq!(saved.supplier, "pch");
+        assert_eq!(saved.stock_ensamble_total, 4);
+        assert_eq!(saved.stock_individual_total, 4);
+        assert!(!saved.cd_only_best, "PCH no es solo-CD");
+
+        // Se puede usar en un ensamble sin bloqueo
+        let mut asm = state.create_assembly(
+            "Con PCH".into(),
+            crate::domain::assembly::QuoteType::Personalizado,
+        );
+        asm = state.set_assembly_item(asm.id, Slot::Cpu, saved.id, 1, Some("pch".to_string())).unwrap();
+        assert_eq!(asm.total_quantity(Slot::Cpu), 1);
+
+        // No es PCH: alta manual genérica conserva supplier 'manual'
+        let manual = state
+            .add_manual_component(NewComponentInput {
+                description: "USADO GENÉRICO".into(),
+                sku: None,
+                brand: None,
+                kind: crate::domain::component::ComponentKind::Gpu,
+                price_amount: "500".into(),
+                price_currency: crate::domain::money::Currency::Mxp,
+                condition: crate::domain::component::Condition::Usado,
+                specs: crate::domain::component::Specs::default(),
+                supplier: None,
+                stock: None,
+            })
+            .unwrap();
+        assert_eq!(manual.supplier, "manual");
         let _ = std::fs::remove_dir_all(dir);
     }
 

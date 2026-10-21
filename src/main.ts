@@ -126,7 +126,10 @@ function renderShell() {
 }
 
 async function refreshComponents(): Promise<ComponentDto[]> {
-  state.components = await api.listComponents();
+  // Mutación in-place: las vistas conservan la referencia a la lista.
+  const fresh = await api.listComponents();
+  state.components.length = 0;
+  state.components.push(...fresh);
   return state.components;
 }
 

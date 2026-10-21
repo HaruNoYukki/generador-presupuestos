@@ -30,6 +30,10 @@ export interface NewManualComponent {
   price_currency: 'USD' | 'MXP';
   condition: 'nuevo' | 'usado';
   specs: Record<string, unknown>;
+  /** Proveedor de la captura manual: 'pch' | 'manual'. */
+  supplier?: string;
+  /** Existencia capturada a mano (PCH). */
+  stock?: number;
 }
 
 export const api = {

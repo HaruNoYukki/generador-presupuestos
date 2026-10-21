@@ -1,8 +1,9 @@
 // Vista del catálogo: exploración, búsqueda y alta manual de usados.
-import { api, NewManualComponent } from '../api';
+import { api } from '../api';
+import { openProductForm } from './product_form';
 import { kindLabel, PICKABLE_KINDS } from '../meta';
 import { ComponentDto } from '../types';
-import { closeModal, el, modal, money, mxn } from '../ui';
+import { el, money, mxn } from '../ui';
 
 interface CatalogState {
   components: ComponentDto[];
@@ -129,160 +130,6 @@ export function createCatalogView(
     return wrap;
   }
 
-  function renderManualForm() {
-    const kindSel = el('select', { class: 'input' },
-      ...PICKABLE_KINDS.map((k) =>
-        el('option', { value: k }, kindLabel(k)),
-      ),
-    ) as HTMLSelectElement;
-
-    const desc = el('input', { class: 'input', placeholder: 'Descripción del componente' }) as HTMLInputElement;
-    const sku = el('input', { class: 'input', placeholder: 'SKU (opcional)' }) as HTMLInputElement;
-    const brand = el('input', { class: 'input', placeholder: 'Marca (opcional)' }) as HTMLInputElement;
-    const price = el('input', { class: 'input', placeholder: 'Precio', type: 'number', min: '0', step: '0.01' }) as HTMLInputElement;
-    const currency = el('select', { class: 'input' },
-      el('option', { value: 'MXP' }, 'Pesos (MXP)'),
-      el('option', { value: 'USD' }, 'Dólares (USD)'),
-    ) as HTMLSelectElement;
-    const condition = el('select', { class: 'input' },
-      el('option', { value: 'usado' }, 'Usado'),
-      el('option', { value: 'nuevo' }, 'Nuevo'),
-    ) as HTMLSelectElement;
-
-    // Especificaciones rápidas según el tipo
-    const extra = el('div', { class: 'form-row' });
-    let specInputs = renderSpecInputs(kindSel.value);
-    extra.replaceChildren(...specInputs.nodes);
-    kindSel.addEventListener('change', () => {
-      specInputs = renderSpecInputs(kindSel.value);
-      extra.replaceChildren(...specInputs.nodes);
-    });
-
-    const errorBox = el('p', { class: 'form-error' });
-    const submit = el('button', { class: 'btn btn-primary' }, 'Agregar al catálogo');
-    submit.addEventListener('click', async () => {
-      errorBox.textContent = '';
-      if (!desc.value.trim() || !price.value) {
-        errorBox.textContent = 'La descripción y el precio son obligatorios.';
-        return;
-      }
-      const input: NewManualComponent = {
-        description: desc.value.trim(),
-        sku: sku.value.trim() || null,
-        brand: brand.value.trim() || null,
-        kind: kindSel.value,
-        price_amount: price.value,
-        price_currency: currency.value as 'USD' | 'MXP',
-        condition: condition.value as 'nuevo' | 'usado',
-        specs: specInputs.collect(),
-      };
-      try {
-        await api.addManualComponent(input);
-        const refreshed = await api.listComponents();
-        state.components = refreshed;
-        onChanged(refreshed);
-        closeModal();
-        render();
-      } catch (e) {
-        errorBox.textContent = String(e);
-      }
-    });
-
-    return el('form', { class: 'form', onsubmit: (e) => e.preventDefault() },
-      el('div', { class: 'form-row' },
-        el('label', {}, 'Tipo', kindSel),
-        el('label', {}, 'Condición', condition),
-      ),
-      el('div', { class: 'form-row' }, el('label', {}, 'Descripción', desc)),
-      el('div', { class: 'form-row' },
-        el('label', {}, 'SKU', sku),
-        el('label', {}, 'Marca', brand),
-      ),
-      el('div', { class: 'form-row' },
-        el('label', {}, 'Precio', price),
-        el('label', {}, 'Moneda', currency),
-      ),
-      extra,
-      errorBox,
-      el('div', { class: 'form-actions' }, submit),
-    );
-  }
-
-  function renderSpecInputs(kind: string): { nodes: HTMLElement[]; collect: () => Record<string, unknown> } {
-    const inputs: { key: string; input: HTMLInputElement | HTMLSelectElement; map?: (v: string) => unknown }[] = [];
-    const nodes: HTMLElement[] = [];
-
-    const text = (key: string, label: string, placeholder: string, map?: (v: string) => unknown) => {
-      const i = el('input', { class: 'input', placeholder }) as HTMLInputElement;
-      inputs.push({ key, input: i, map });
-      nodes.push(el('label', {}, label, i));
-    };
-
-    switch (kind) {
-      case 'cpu':
-        text('socket', 'Socket', 'AM4 / AM5 / LGA1700');
-        {
-          const sel = el('select', { class: 'input' },
-            el('option', { value: '' }, '¿Incluye disipador? (desconocido)'),
-            el('option', { value: 'true' }, 'Sí incluye disipador'),
-            el('option', { value: 'false' }, 'No incluye disipador'),
-          ) as HTMLSelectElement;
-          inputs.push({ key: 'includes_cooler', input: sel, map: (v) => (v === '' ? null : v === 'true') });
-          nodes.push(el('label', {}, 'Disipador', sel));
-        }
-        break;
-      case 'psu':
-        text('wattage', 'Watts', '650', (v) => (v ? parseInt(v, 10) : null));
-        break;
-      case 'case':
-        {
-          const sel = el('select', { class: 'input' },
-            el('option', { value: 'false' }, 'No incluye fuente'),
-            el('option', { value: 'true' }, 'Sí incluye fuente'),
-          ) as HTMLSelectElement;
-          inputs.push({ key: 'includes_psu', input: sel, map: (v) => v === 'true' });
-          nodes.push(el('label', {}, 'Fuente incluida', sel));
-        }
-        text('psu_watts', 'Watts de la fuente incluida', '600', (v) => (v ? parseInt(v, 10) : null));
-        break;
-      case 'ram':
-        text('ddr', 'DDR', 'DDR4 / DDR5');
-        text('capacity_gb', 'Capacidad (GB)', '16', (v) => (v ? parseInt(v, 10) : null));
-        text('ram_form', 'Formato', 'DIMM / SODIMM');
-        break;
-      case 'storage':
-        {
-          const sel = el('select', { class: 'input' },
-            el('option', { value: 'ssd' }, 'SSD'),
-            el('option', { value: 'hdd' }, 'HDD'),
-          ) as HTMLSelectElement;
-          inputs.push({ key: 'storage_kind', input: sel });
-          nodes.push(el('label', {}, 'Tipo', sel));
-        }
-        text('capacity_raw', 'Capacidad', '480GB / 2TB');
-        break;
-      case 'gpu':
-        text('vram', 'VRAM', '8GB GDDR6');
-        break;
-    }
-    if (nodes.length) {
-      nodes.unshift(el('div', { class: 'form-title' }, 'Especificaciones (opcionales)'));
-    }
-
-    return {
-      nodes,
-      collect: () => {
-        const specs: Record<string, unknown> = {};
-        for (const { key, input, map } of inputs) {
-          const v = input.value.trim();
-          if (v === '') continue;
-          specs[key] = map ? map(v) : v;
-        }
-        return specs;
-      },
-    };
-  }
-
   function render() {
     const search = el('input', {
       class: 'input search',
@@ -316,9 +163,17 @@ export function createCatalogView(
       search.focus();
     });
 
-    const manualBtn = el('button', { class: 'btn btn-primary' }, '+ Componente manual / usado');
+    const manualBtn = el('button', { class: 'btn btn-primary' }, '+ Agregar producto (manual / PCH)');
     manualBtn.addEventListener('click', () => {
-      modal('Agregar componente manual', renderManualForm());
+      openProductForm({
+        title: 'Agregar producto',
+        defaultSupplier: 'manual',
+        onSaved: async () => {
+          const refreshed = await api.listComponents();
+          onChanged(refreshed);
+          tableZone.replaceChildren(renderTable());
+        },
+      });
     });
 
     const tableZone = el('div');

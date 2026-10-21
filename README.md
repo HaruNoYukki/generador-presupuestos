@@ -62,6 +62,7 @@ acentos y mayúsculas) y la clasificación de tipos son compartidos.
 | `arroba` | Lista actual: departamento, moneda, promoción, almacenes A-CEN/AVE-2/CEDIS/CMAL/GDL y fila de T.C |
 | `cva` | `.xls` o `.xlsx`: Clave, **Codigo de Fabricante** (SKU), Marca, Grupo, Precio, Moneda, Promos, **Disp** y **Disp CD**, UPC |
 | `generico` | Fallback: SKU + descripción + costo; el tipo se infiere de la descripción |
+| captura manual | Sin lista: alta a mano desde la app (Catálogo o el picker de ensambles), con existencia propia. Incluye al proveedor **PCH** |
 
 Para agregar un proveedor nuevo: implementa `SupplierAdapter` con su
 `detect()` y agrégalo a `adapters()` (específicos antes que genéricos).
@@ -81,6 +82,12 @@ Para agregar un proveedor nuevo: implementa `SupplierAdapter` con su
 - En el picker puedes **ver los precios de los demás proveedores** y
   cambiar de proveedor en cualquier partida sin importar quién sea el más
   barato.
+- **Alta desde el picker**: cada lista desplegable tiene el botón
+  "＋ Agregar [slot] nuevo" para capturar un producto al instante y
+  usarlo de inmediato (útil para proveedores sin Excel como PCH).
+- **Advertencia PCH en fabricación**: al marcar "En fabricación" un
+  ensamble que contiene productos de PCH aparece un banner con cada uno
+  (descripción y SKU) pidiendo verificar existencia manualmente.
 
 ## Reglas de negocio
 

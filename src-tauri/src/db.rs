@@ -114,6 +114,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if version < 6 {
         migrate_v6_title_source(conn)?;
     }
+    // Proveedor PCH (captura manual, sin Excel): idempotente para bases
+    // creadas antes de v6.
+    conn.execute(
+        "INSERT OR IGNORE INTO suppliers (id, name) VALUES ('pch', 'PCH')",
+        [],
+    )?;
     conn.pragma_update(None, "user_version", 6)?;
     Ok(())
 }
@@ -249,6 +255,7 @@ fn migrate_v5_normalized(conn: &Connection) -> rusqlite::Result<()> {
          INSERT INTO suppliers (id, name) VALUES
             ('arroba', 'Arroba (proveedor actual)'),
             ('cva', 'CVA'),
+            ('pch', 'PCH'),
             ('manual', 'Captura manual');
 
          CREATE TABLE brands (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
@@ -716,6 +723,14 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
                     o.stock_ensamble = s;
                     o.stock_individual = s;
                 }
+                // PCH: existencia capturada a mano (almacén 'pch_existencia').
+                // No se valida por sistema: al usarla en fabricación se pide
+                // verificar existencia manualmente.
+                "pch" => {
+                    let s = o.stocks.get("pch_existencia").copied().unwrap_or(0);
+                    o.stock_ensamble = s;
+                    o.stock_individual = s;
+                }
                 _ => {
                     o.stock_ensamble = 0;
                     o.stock_individual = 0;
@@ -799,6 +814,10 @@ fn stock_label(supplier: &str, stocks: &BTreeMap<String, u32>) -> String {
             stocks.get("a_cen").copied().unwrap_or(0),
             stocks.get("ave_2").copied().unwrap_or(0),
             stocks.get("cedis").copied().unwrap_or(0)
+        ),
+        "pch" => format!(
+            "Existencia {}",
+            stocks.get("pch_existencia").copied().unwrap_or(0)
         ),
         _ => String::new(),
     }

@@ -51,6 +51,12 @@ pub struct NewComponentInput {
     pub condition: Condition,
     #[serde(default)]
     pub specs: Specs,
+    /// Proveedor de la captura manual: 'pch' o 'manual' (default).
+    #[serde(default)]
+    pub supplier: Option<String>,
+    /// Existencia capturada a mano (relevantes para PCH, que no trae lista).
+    #[serde(default)]
+    pub stock: Option<u32>,
 }
 
 fn default_condition() -> Condition {
@@ -325,6 +331,8 @@ mod tests {
                 price_currency: Currency::Mxp,
                 condition: Condition::Usado,
                 specs: Specs::default(),
+                supplier: None,
+                stock: None,
             })
             .unwrap();
         assert_eq!(cat.components.len(), before + 1);
@@ -349,6 +357,8 @@ mod tests {
                 price_currency: Currency::Mxp,
                 condition: Condition::Usado,
                 specs: Specs::default(),
+                supplier: None,
+                stock: None,
             })
             .unwrap();
         let manual = cat.manual_components();
