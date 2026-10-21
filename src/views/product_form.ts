@@ -36,7 +36,11 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 /** Campos de especificación según el tipo seleccionado. */
-function specInputsFor(kind: string): { nodes: HTMLElement[]; collect: () => Record<string, unknown> } {
+function specInputsFor(
+  kind: string,
+  catalogs: { sockets: string[]; ddrs: string[]; formFactors: string[]; ramForms: string[] },
+): { nodes: HTMLElement[]; collect: () => Record<string, unknown> } {
+  const { sockets, ddrs, formFactors, ramForms } = catalogs;
   const inputs: { key: string; input: HTMLInputElement | HTMLSelectElement; map?: (v: string) => unknown }[] = [];
   const nodes: HTMLElement[] = [];
   const text = (key: string, label: string, placeholder: string, map?: (v: string) => unknown) => {
@@ -45,9 +49,18 @@ function specInputsFor(kind: string): { nodes: HTMLElement[]; collect: () => Rec
     nodes.push(el('label', {}, label, i));
   };
 
+  const select = (key: string, label: string, options: string[], emptyLabel: string) => {
+    const sel = el('select', { class: 'input' },
+      el('option', { value: '' }, emptyLabel),
+      ...options.map((o) => el('option', { value: o }, o)),
+    ) as HTMLSelectElement;
+    inputs.push({ key, input: sel });
+    nodes.push(el('label', {}, label, sel));
+  };
+
   switch (kind) {
     case 'cpu':
-      text('socket', 'Socket', 'AM4 / AM5 / LGA1700');
+      select('socket', 'Socket', sockets, 'Desconocido');
       {
         const sel = el('select', { class: 'input' },
           el('option', { value: '' }, '¿Incluye disipador? (desconocido)'),
@@ -70,13 +83,13 @@ function specInputsFor(kind: string): { nodes: HTMLElement[]; collect: () => Rec
         inputs.push({ key: 'includes_psu', input: sel, map: (v) => v === 'true' });
         nodes.push(el('label', {}, 'Fuente incluida', sel));
         text('psu_watts', 'Watts de la fuente incluida', '600', (v) => (v ? parseInt(v, 10) : null));
-        text('form_factor', 'Factor de forma', 'ATX / MICRO ATX / MINI ITX');
+        select('form_factor', 'Factor de forma', formFactors, 'Desconocido');
       }
       break;
     case 'ram':
-      text('ddr', 'DDR', 'DDR4 / DDR5');
+      select('ddr', 'DDR', ddrs, 'Desconocido');
       text('capacity_gb', 'Capacidad (GB)', '16', (v) => (v ? parseInt(v, 10) : null));
-      text('ram_form', 'Formato', 'DIMM / SODIMM');
+      select('ram_form', 'Formato', ramForms, 'Desconocido');
       break;
     case 'storage':
       {
@@ -93,9 +106,9 @@ function specInputsFor(kind: string): { nodes: HTMLElement[]; collect: () => Rec
       text('vram', 'VRAM', '8GB GDDR6');
       break;
     case 'motherboard':
-      text('socket', 'Socket', 'AM4 / AM5 / LGA1700');
-      text('ddr', 'DDR', 'DDR4 / DDR5');
-      text('form_factor', 'Factor de forma', 'ATX / MICRO ATX / MINI ITX');
+      select('socket', 'Socket', sockets, 'Desconocido');
+      select('ddr', 'DDR', ddrs, 'Desconocido');
+      select('form_factor', 'Factor de forma', formFactors, 'Desconocido');
       break;
   }
   return { nodes, collect: () => {
@@ -109,7 +122,17 @@ function specInputsFor(kind: string): { nodes: HTMLElement[]; collect: () => Rec
   } };
 }
 
-export function openProductForm(opts: ProductFormOptions): void {
+export async function openProductForm(opts: ProductFormOptions): Promise<void> {
+  // Cargar catálogos normalizados (marcas y atributos) antes de armar el form
+  const [filters, sockets, ddrs, formFactors, ramForms] = await Promise.all([
+    api.catalogFilters().catch(() => ({ brands: [], departments: [] })),
+    api.listSpecOptions('socket').catch(() => [] as string[]),
+    api.listSpecOptions('ddr').catch(() => [] as string[]),
+    api.listSpecOptions('form_factor').catch(() => [] as string[]),
+    api.listSpecOptions('ram_form').catch(() => [] as string[]),
+  ]);
+  const brands = filters.brands;
+
   const kinds: string[] = opts.fixedKinds ?? Object.keys(KIND_LABELS);
   const kindSel = el('select', { class: 'input' },
     ...kinds.map((k) => el('option', { value: k, selected: k === opts.defaultKind }, KIND_LABELS[k] ?? k)),
@@ -128,7 +151,11 @@ export function openProductForm(opts: ProductFormOptions): void {
 
   const desc = el('input', { class: 'input', placeholder: 'Descripción del producto' }) as HTMLInputElement;
   const sku = el('input', { class: 'input', placeholder: 'SKU (vacío = autogenerado)' }) as HTMLInputElement;
-  const brand = el('input', { class: 'input', placeholder: 'Marca' }) as HTMLInputElement;
+  // Marca: select desde el catálogo (normalizado)
+  const brand = el('select', { class: 'input' },
+    el('option', { value: '' }, 'SIN MARCA'),
+    ...brands.map((b) => el('option', { value: b }, b)),
+  ) as HTMLSelectElement;
   const price = el('input', { class: 'input', type: 'number', min: '0', step: '0.01', placeholder: 'Precio' }) as HTMLInputElement;
   const currency = el('select', { class: 'input' },
     el('option', { value: 'MXP' }, 'Pesos (MXP)'),
@@ -136,10 +163,11 @@ export function openProductForm(opts: ProductFormOptions): void {
   ) as HTMLSelectElement;
   const stock = el('input', { class: 'input', type: 'number', min: '0', step: '1', value: '0' }) as HTMLInputElement;
 
+  const catalog = { sockets, ddrs, formFactors, ramForms };
   const specZone = el('div', { class: 'form-row' });
   let specCollect = () => ({}) as Record<string, unknown>;
   function refreshSpecs() {
-    const { nodes, collect } = specInputsFor(String(kindSel.value));
+    const { nodes, collect } = specInputsFor(String(kindSel.value), catalog);
     specZone.replaceChildren(...nodes);
     specCollect = collect;
   }

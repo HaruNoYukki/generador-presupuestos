@@ -659,3 +659,11 @@ select.input { cursor: pointer; }
 }
 .pch-banner strong:first-child { color: var(--warn); }
 .pch-line { margin-top: 4px; }
+
+/* ---------- Catálogos de atributos ---------- */
+.catalog-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}

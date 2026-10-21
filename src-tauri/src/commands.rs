@@ -439,6 +439,43 @@ pub fn ai_normalize_titles(
     Ok(AiTitlesSummary { improved, remaining })
 }
 
+/// Valores de un catálogo de atributo normalizado (socket, ddr,
+/// form_factor, ram_form).
+#[tauri::command]
+pub fn list_spec_options(
+    state: State<'_, SharedState>,
+    kind: String,
+) -> CmdResult<Vec<String>> {
+    let s = state.0.lock().unwrap();
+    Ok(crate::db::list_spec_options(&s.db(), &kind).unwrap_or_default())
+}
+
+/// Agrega un valor nuevo a un catálogo de atributo. Solo tipos conocidos.
+#[tauri::command]
+pub fn add_spec_option(
+    state: State<'_, SharedState>,
+    kind: String,
+    value: String,
+) -> CmdResult<bool> {
+    const KINDS: &[&str] = &["socket", "ddr", "form_factor", "ram_form"];
+    if !KINDS.contains(&kind.as_str()) {
+        return Err(format!("Catálogo desconocido: {kind}"));
+    }
+    let value = value.trim().to_uppercase();
+    if value.is_empty() {
+        return Err("El valor no puede estar vacío".into());
+    }
+    let s = state.0.lock().unwrap();
+    crate::db::add_spec_option(&s.db(), &kind, &value).map_err(|e| e.to_string())
+}
+
+/// Agrega una marca nueva al catálogo de marcas.
+#[tauri::command]
+pub fn add_brand(state: State<'_, SharedState>, name: String) -> CmdResult<()> {
+    let s = state.0.lock().unwrap();
+    crate::db::add_brand(&s.db(), name.trim()).map_err(|e| e.to_string())
+}
+
 /// Consulta principal de productos: por SKU (único).
 #[tauri::command]
 pub fn get_component_by_sku(

@@ -67,6 +67,16 @@ acentos y mayúsculas) y la clasificación de tipos son compartidos.
 Para agregar un proveedor nuevo: implementa `SupplierAdapter` con su
 `detect()` y agrégalo a `adapters()` (específicos antes que genéricos).
 
+### Catálogos de atributos (Ajustes)
+
+Marca, Socket, DDR, Factor de forma y Formato de memoria RAM son
+**catálogos normalizados** (tablas `brands` y `spec_options`): los
+formularios de alta usan listas desplegables, nunca texto libre, para
+evitar problemas de normalización. Valores nuevos se agregan desde
+**Ajustes → "Catálogos del producto"** (su propio menú, uno por catálogo).
+Los imports de listas también registran automáticamente cualquier valor
+nuevo que traigan.
+
 ## Inventario multi-proveedor
 
 - El mismo SKU puede existir en varios proveedores con precio y

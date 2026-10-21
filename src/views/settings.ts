@@ -131,6 +131,61 @@ export function createSettingsView(onChanged: () => void): HTMLElement {
       }
     });
 
+    // Catálogos de atributos normalizados: agregar valores por separado
+    const CATALOGS: { key: string; label: string }[] = [
+      { key: 'marca', label: 'Marca' },
+      { key: 'socket', label: 'Socket' },
+      { key: 'ddr', label: 'DDR' },
+      { key: 'form_factor', label: 'Factor de forma' },
+      { key: 'ram_form', label: 'Formato de memoria RAM' },
+    ];
+    let catalogoSel = 'marca';
+    let valores: string[] = [];
+
+    const catSel = el('select', { class: 'input' },
+      ...CATALOGS.map((c) => el('option', { value: c.key }, c.label)),
+    ) as HTMLSelectElement;
+    const valoresBox = el('div', { class: 'catalog-values' });
+    const newValue = el('input', { class: 'input', placeholder: 'Nuevo valor' }) as HTMLInputElement;
+    const catMsg = el('p', { class: 'form-error' });
+
+    async function refreshCatalogList() {
+      valores = catalogoSel === 'marca'
+        ? (await api.catalogFilters().catch(() => ({ brands: [] }))).brands
+        : await api.listSpecOptions(catalogoSel).catch(() => []);
+      valoresBox.replaceChildren(
+        ...valores.map((v) => el('span', { class: 'chip chip-supplier' }, v)),
+        valores.length === 0 ? el('span', { class: 'muted' }, 'Sin valores') : el('span'),
+      );
+    }
+    catSel.addEventListener('change', async () => {
+      catalogoSel = catSel.value;
+      await refreshCatalogList();
+    });
+
+    const catAdd = el('button', { class: 'btn btn-outline' }, 'Agregar valor');
+    catAdd.addEventListener('click', async () => {
+      catMsg.textContent = '';
+      const v = newValue.value.trim();
+      if (!v) return;
+      try {
+        if (catalogoSel === 'marca') {
+          await api.addBrand(v);
+        } else {
+          await api.addSpecOption(catalogoSel, v);
+        }
+        newValue.value = '';
+        await refreshCatalogList();
+        catMsg.className = 'ok-note';
+        catMsg.textContent = `"${v}" agregado al catálogo ${CATALOGS.find(c => c.key === catalogoSel)?.label}.`;
+        onChanged();
+      } catch (e) {
+        catMsg.textContent = String(e);
+      }
+    });
+
+    await refreshCatalogList();
+
     view.replaceChildren(
       el('div', { class: 'settings-grid' },
         el('div', { class: 'card' },
@@ -162,6 +217,20 @@ export function createSettingsView(onChanged: () => void): HTMLElement {
             '(los productos existentes se actualizan conservando su identidad; los ' +
             'nuevos se agregan). El inventario que se considera para vender es ' +
             'A-CEN + AVE-2 + CEDIS.'),
+          el('div', { class: 'card' },
+            el('h3', {}, 'Catálogos del producto'),
+            el('p', { class: 'muted' },
+              'Valores permitidos en los formularios de alta. Agrega aquí los valores nuevos de cada catálogo; los imports de listas también los registran automáticamente.'),
+            el('div', { class: 'form-row' },
+              el('label', {}, 'Catálogo', catSel),
+            ),
+            el('div', { class: 'catalog-values' }, 'Cargando…'),
+            el('div', { class: 'form-row' },
+              el('label', {}, 'Nuevo valor', newValue),
+              catAdd,
+            ),
+            catMsg,
+          ),
           el('div', { class: 'card' },
             el('h3', {}, 'Títulos con IA (Z.ai)'),
             el('p', { class: 'muted' },

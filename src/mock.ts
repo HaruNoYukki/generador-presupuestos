@@ -631,6 +631,24 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       asm.confirmed_at = new Date().toISOString();
       return asm;
     }
+    case 'catalog_filters': {
+      const brands = [...new Set(state.components.map((c) => c.brand))].sort();
+      const departments = [...new Set(state.components.map((c) => c.department))].sort();
+      return { brands, departments };
+    }
+    case 'list_spec_options': {
+      const seed: Record<string, string[]> = {
+        socket: ['AM4', 'AM5', 'LGA1700', 'LGA1851', 'LGA1200', 'LGA1151'],
+        ddr: ['DDR3', 'DDR4', 'DDR5'],
+        form_factor: ['ATX', 'MICRO ATX', 'MINI ITX'],
+        ram_form: ['DIMM', 'SODIMM'],
+      };
+      return seed[String(args.kind)] ?? [];
+    }
+    case 'add_spec_option':
+      throw new Error('Los catálogos de atributos solo se administran en la aplicación de escritorio.');
+    case 'add_brand':
+      throw new Error('Las marcas solo se administran en la aplicación de escritorio.');
     case 'import_catalog':
     case 'import_catalog_xlsx':
       throw new Error('Importar catálogo solo está disponible en la aplicación de escritorio.');

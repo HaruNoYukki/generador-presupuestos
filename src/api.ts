@@ -42,6 +42,13 @@ export const api = {
   catalogFilters: () =>
     call<{ brands: string[]; departments: string[] }>('catalog_filters'),
 
+  listSpecOptions: (kind: string) => call<string[]>('list_spec_options', { kind }),
+
+  addSpecOption: (kind: string, value: string) =>
+    call<boolean>('add_spec_option', { kind, value }),
+
+  addBrand: (name: string) => call<void>('add_brand', { name }),
+
   getZaiKey: () => call<string>('get_zai_key'),
 
   setZaiKey: (key: string) => call<void>('set_zai_key', { key }),

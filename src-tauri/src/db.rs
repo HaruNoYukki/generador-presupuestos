@@ -120,7 +120,43 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "INSERT OR IGNORE INTO suppliers (id, name) VALUES ('pch', 'PCH')",
         [],
     )?;
-    conn.pragma_update(None, "user_version", 6)?;
+    if version < 7 {
+        migrate_v7_spec_options(conn)?;
+    }
+    conn.pragma_update(None, "user_version", 7)?;
+    Ok(())
+}
+
+/// v7: catalogo de valores permitidos para los atributos normalizados
+/// (socket, ddr, form_factor, ram_form). Los selects de la GUI se alimentan
+/// de aqui; valores nuevos se agregan desde su propio menu en Ajustes o
+/// automaticamente al importar listas que traigan valores nuevos.
+fn migrate_v7_spec_options(conn: &Connection) -> rusqlite::Result<()> {
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='spec_options'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has == 0 {
+        conn.execute_batch(
+            "CREATE TABLE spec_options (
+                 id      INTEGER PRIMARY KEY,
+                 kind    TEXT NOT NULL,
+                 value   TEXT NOT NULL,
+                 UNIQUE(kind, value)
+             );
+             INSERT INTO spec_options (kind, value) VALUES
+                 ('socket', 'AM4'), ('socket', 'AM5'),
+                 ('socket', 'LGA1700'), ('socket', 'LGA1851'),
+                 ('socket', 'LGA1200'), ('socket', 'LGA1151'),
+                 ('ddr', 'DDR3'), ('ddr', 'DDR4'), ('ddr', 'DDR5'),
+                 ('form_factor', 'ATX'), ('form_factor', 'MICRO ATX'),
+                 ('form_factor', 'MINI ITX'),
+                 ('ram_form', 'DIMM'), ('ram_form', 'SODIMM');",
+        )?;
+    }
     Ok(())
 }
 
@@ -483,6 +519,49 @@ fn catalog_id(conn: &Connection, table: &str, name: &str) -> rusqlite::Result<i6
     )
 }
 
+/// Valores registrados de un atributo normalizado (socket, ddr,
+/// form_factor, ram_form).
+pub fn list_spec_options(conn: &Connection, kind: &str) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT value FROM spec_options WHERE kind = ?1 ORDER BY value",
+    )?;
+    let rows = stmt.query_map(params![kind], |r| r.get(0))?;
+    rows.collect()
+}
+
+/// Agrega un valor a un atributo normalizado (idempotente).
+pub fn add_spec_option(conn: &Connection, kind: &str, value: &str) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO spec_options (kind, value) VALUES (?1, ?2)",
+        params![kind, value],
+    )?;
+    Ok(n > 0)
+}
+
+/// Registra automaticamente los valores de specs normalizadas que traiga
+/// un producto importado (para que los selects siempre esten completos).
+fn register_spec_values(conn: &Connection, specs: &Specs) {
+    let pairs = [
+        ("socket", specs.socket.as_deref()),
+        ("ddr", specs.ddr.as_deref()),
+        ("form_factor", specs.form_factor.as_deref()),
+        ("ram_form", specs.ram_form.as_deref()),
+    ];
+    for (kind, value) in pairs {
+        if let Some(v) = value {
+            if !v.trim().is_empty() {
+                let _ = add_spec_option(conn, kind, v.trim());
+            }
+        }
+    }
+}
+
+/// Agrega una marca al catálogo (idempotente).
+pub fn add_brand(conn: &Connection, name: &str) -> rusqlite::Result<()> {
+    catalog_id(conn, "brands", name)?;
+    Ok(())
+}
+
 /// Lista de marcas para filtros de la interfaz.
 pub fn list_brands(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare("SELECT name FROM brands ORDER BY name")?;
@@ -511,6 +590,7 @@ pub fn upsert_master(conn: &Connection, c: &Component, update_details: bool) -> 
     let brand_id = catalog_id(conn, "brands", &c.brand)?;
     let dept_id = catalog_id(conn, "departments", &c.department)?;
     let specs = serde_json::to_string(&c.specs).unwrap_or_else(|_| "{}".into());
+    register_spec_values(conn, &c.specs);
     conn.execute(
         "INSERT INTO products (id, sku, barcode, description, brand_id, department_id,
              kind, condition, specs, title_source, updated_at)
@@ -1292,6 +1372,35 @@ mod tests {
         let cand = list_raw_title_candidates(&c, 10).unwrap();
         assert_eq!(cand.len(), 1, "descripción nueva = candidato de nuevo");
         assert_eq!(cand[0].1, "TITULO NUEVO DEL PROVEEDOR 2027");
+    }
+
+    #[test]
+    fn spec_options_catalog_and_auto_registration() {
+        let c = conn();
+        // Semilla v7: valores iniciales por atributo
+        let sockets = list_spec_options(&c, "socket").unwrap();
+        assert!(sockets.contains(&"AM4".to_string()));
+        assert!(sockets.contains(&"LGA1700".to_string()));
+        assert_eq!(list_spec_options(&c, "ram_form").unwrap().len(), 2);
+
+        // Agregar valor nuevo (idempotente)
+        assert!(add_spec_option(&c, "socket", "AM5+").unwrap());
+        assert!(!add_spec_option(&c, "socket", "AM5+").unwrap(), "duplicado ignorado");
+        assert!(list_spec_options(&c, "socket").unwrap().contains(&"AM5+".to_string()));
+
+        // Auto-registro desde specs de un producto importado
+        let mut p = product("SKU-SPEC", "10.00", "Producto con LGA1851");
+        p.specs = Specs {
+            socket: Some("LGA1851".into()),
+            ddr: Some("DDR5".into()),
+            form_factor: Some("EEE-ATX".into()),
+            ..Default::default()
+        };
+        upsert_master(&c, &p, true).unwrap();
+        upsert_offer(&c, &p).unwrap();
+        assert!(list_spec_options(&c, "socket").unwrap().contains(&"LGA1851".to_string()));
+        assert!(list_spec_options(&c, "ddr").unwrap().contains(&"DDR5".to_string()));
+        assert!(list_spec_options(&c, "form_factor").unwrap().contains(&"EEE-ATX".to_string()));
     }
 
     #[test]
