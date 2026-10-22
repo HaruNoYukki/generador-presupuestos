@@ -32,6 +32,10 @@ interface SeedComponent {
   source: 'lista' | 'manual';
   supplier?: string;
   specs: Record<string, unknown>;
+  /** Corrección manual de precio (oferta de lista, protegida del import). */
+  price_override?: { amount: string; currency: 'USD' | 'MXP' } | null;
+  /** Corrección manual de existencia (misma protección). */
+  stock_override?: number | null;
 }
 
 // Semilla opcional: en el navegador se intenta leer /data/catalog_seed.json
@@ -100,6 +104,14 @@ interface MockState {
   saleNotes: unknown[];
 }
 
+// Configuración del servicio XML de CVA (mock en memoria; la consulta
+// real no está implementada ni en el backend todavía).
+let mockFeedConfig: { endpoint: string; client_key: string; configured: boolean } = {
+  endpoint: '',
+  client_key: '',
+  configured: false,
+};
+
 const state: MockState = {
   saleNoteCounters: new Map(),
   saleNotes: [],
@@ -118,10 +130,15 @@ function asDto(c: SeedComponent): ComponentDto {
     cmal: c.stock?.cmal ?? 0,
     gdl: c.stock?.gdl ?? 0,
   };
-  const sellable = stock.a_cen + stock.ave_2 + stock.cedis;
+  const sellableBase = stock.a_cen + stock.ave_2 + stock.cedis;
+  // Corrección manual de existencia: gana sobre la lista, como en el backend.
+  const stockOverride = c.stock_override ?? null;
+  const sellable = stockOverride ?? sellableBase;
+  const price = c.price_override ?? c.price;
   return {
     ...c,
     specs: c.specs ?? {},
+    price,
     stock,
     supplier: c.supplier ?? 'arroba',
     offer_stocks: stock,
@@ -131,16 +148,23 @@ function asDto(c: SeedComponent): ComponentDto {
     offers: [
       {
         supplier: c.supplier ?? 'arroba',
-        price: c.price,
+        price,
         on_promotion: c.on_promotion,
         stocks: stock,
-        stock_label: `CEN ${stock.a_cen} · AVE-2 ${stock.ave_2} · CEDIS ${stock.cedis}`,
+        stock_label: stockOverride != null ? `Editado a mano: ${stockOverride}` : `CEN ${stock.a_cen} · AVE-2 ${stock.ave_2} · CEDIS ${stock.cedis}`,
         stock_ensamble: sellable,
         stock_individual: sellable,
         cd_only: false,
+        price_overridden: c.price_override != null,
+        stock_overridden: stockOverride != null,
+        list_price: c.price_override != null ? c.price : null,
+        list_stock: stockOverride != null ? sellableBase : null,
       },
     ],
-    price_mxp: { amount: toMxp(c.price, ceilRate(state.rate)), currency: 'MXP' },
+    overrides: {},
+    list_kind: c.kind,
+    list_specs: c.specs ?? {},
+    price_mxp: { amount: toMxp(price, ceilRate(state.rate)), currency: 'MXP' },
   } as ComponentDto;
 }
 
@@ -232,7 +256,8 @@ function computeCartProfit(items: CartItem[], percent: number): ProfitReport {
   for (const item of items) {
     const c = state.components.find((x) => x.id === item.component_id);
     if (!c) continue;
-    const unit = c.price.currency === 'USD' ? parseFloat(c.price.amount) * eff : parseFloat(c.price.amount);
+    const up = effectivePrice(c);
+    const unit = up.currency === 'USD' ? parseFloat(up.amount) * eff : parseFloat(up.amount);
     const cost = r2(unit * item.quantity);
     const base_profit = r2(cost * factor);
     const iva = r2((cost + base_profit) * 0.16);
@@ -274,7 +299,8 @@ function computeProfit(a: Assembly, percent: number, target?: string | null): Pr
     for (const item of items ?? []) {
       const c = state.components.find((x) => x.id === item.component_id);
       if (!c) continue;
-      const unit = c.price.currency === 'USD' ? parseFloat(c.price.amount) * eff : parseFloat(c.price.amount);
+      const up = effectivePrice(c);
+    const unit = up.currency === 'USD' ? parseFloat(up.amount) * eff : parseFloat(up.amount);
       const cost = r2(unit * item.quantity);
       const base_profit = r2(cost * factor);
       const iva = r2((cost + base_profit) * 0.16);
@@ -350,8 +376,9 @@ function computeCost(a: Assembly): CostBreakdown {
     for (const item of items ?? []) {
       const c = state.components.find((x) => x.id === item.component_id);
       if (!c) continue;
+      const p = effectivePrice(c);
       const price =
-        c.price.currency === 'USD' ? parseFloat(c.price.amount) * eff : parseFloat(c.price.amount);
+        p.currency === 'USD' ? parseFloat(p.amount) * eff : parseFloat(p.amount);
       subtotal += price * item.quantity;
     }
   }
@@ -361,12 +388,38 @@ function computeCost(a: Assembly): CostBreakdown {
   return { subtotal: mxp(subtotal), iva: mxp(iva), total: mxp(subtotal + iva) };
 }
 
+function sellableOf(c: SeedComponent): number {
+  if (c.stock_override != null) return c.stock_override;
+  return (c.stock?.a_cen ?? 0) + (c.stock?.ave_2 ?? 0) + (c.stock?.cedis ?? 0);
+}
+
+/** Precio EFECTIVO de un componente del mock (override si hay, si no lista). */
+function effectivePrice(c: SeedComponent): { amount: string; currency: 'USD' | 'MXP' } {
+  return c.price_override ?? c.price;
+}
+
 function validate(a: Assembly): ValidationReport {
   const issues: ValidationIssue[] = [];
   const qty = (slot: string) =>
     (a.slots[slot as keyof typeof a.slots] ?? []).reduce((n, i) => n + i.quantity, 0);
   const items = (slot: string) => a.slots[slot as keyof typeof a.slots] ?? [];
   const comp = (id: string) => state.components.find((c) => c.id === id);
+
+  // Existencia para ensamble: error si se pide más de lo disponible.
+  for (const slot of Object.keys(SLOT_KINDS)) {
+    for (const item of items(slot)) {
+      const c = comp(item.component_id);
+      if (!c) continue;
+      const disponible = sellableOf(c);
+      if (item.quantity > disponible) {
+        issues.push({
+          severity: 'error',
+          code: 'out_of_stock',
+          message: `Sin existencia para ensamble: "${c.description.slice(0, 60)}" (pedido ${item.quantity}, disponible ${disponible}).`,
+        });
+      }
+    }
+  }
 
   for (const [slot, msg] of MINIMUMS) {
     if (qty(slot) === 0) {
@@ -494,7 +547,7 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
           currency: input.price_currency as 'USD' | 'MXP',
         },
         on_promotion: false,
-        stock: {},
+        stock: { a_cen: Number(input.stock ?? 0) || 0 },
         source: 'manual',
         supplier: esPch ? 'pch' : 'manual',
         specs: (input.specs ?? {}) as Record<string, unknown>,
@@ -502,6 +555,65 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       state.components.push(c);
       return asDto(c);
     }
+    case 'update_component': {
+      const c = state.components.find((x) => x.id === args.id);
+      if (!c) throw new Error('Componente no encontrado en el catálogo');
+      const input = args.input as Record<string, unknown>;
+      if (!String(input.description ?? '').trim()) throw new Error('La descripción es obligatoria');
+      c.description = String(input.description).trim();
+      c.brand = (input.brand as string) || 'SIN MARCA';
+      c.kind = input.kind as string;
+      c.condition = input.condition as 'nuevo' | 'usado';
+      c.specs = (input.specs ?? {}) as Record<string, unknown>;
+      const supplier = input.supplier as string | null | undefined;
+      if (supplier) {
+        if (supplier === 'manual' || supplier === 'pch') {
+          // Captura a mano: directo.
+          if (input.price_amount != null) {
+            c.price = {
+              amount: String(input.price_amount),
+              currency: (input.price_currency as 'USD' | 'MXP') ?? c.price.currency,
+            };
+          }
+          if (input.stock != null) c.stock = { a_cen: Number(input.stock) || 0 };
+        } else {
+          // Oferta de lista: solo se protege lo que difiere del vigente.
+          // `price`/`stock` conservan el valor de LISTA para poder revertir.
+          if (input.price_amount != null) {
+            const next = {
+              amount: String(input.price_amount),
+              currency: (input.price_currency as 'USD' | 'MXP') ?? (c.price_override?.currency ?? c.price.currency),
+            };
+            if (next.amount !== (c.price_override?.amount ?? c.price.amount) || next.currency !== (c.price_override?.currency ?? c.price.currency)) {
+              c.price_override = next;
+            }
+          }
+          if (input.stock != null) {
+            const nextStock = Number(input.stock) || 0;
+            if (nextStock !== (c.stock_override ?? (c.stock.a_cen ?? 0) + (c.stock.ave_2 ?? 0) + (c.stock.cedis ?? 0))) {
+              c.stock_override = nextStock;
+            }
+          }
+        }
+      }
+      return asDto(c);
+    }
+    case 'clear_offer_override': {
+      const c = state.components.find((x) => x.id === args.id);
+      if (!c) throw new Error('Componente no encontrado en el catálogo');
+      c.price_override = null;
+      c.stock_override = null;
+      return asDto(c);
+    }
+    case 'get_cva_feed_config':
+      return mockFeedConfig;
+    case 'set_cva_feed_config':
+      mockFeedConfig = {
+        endpoint: String((args.config as Record<string, unknown>).endpoint ?? ''),
+        client_key: String((args.config as Record<string, unknown>).client_key ?? ''),
+        configured: true,
+      };
+      return;
     case 'remove_manual_component':
       state.components = state.components.filter((c) => c.id !== args.id);
       return true;
@@ -594,6 +706,12 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       const list = (asm.slots[slot as keyof typeof asm.slots] ??= []);
       const existing = list.find((i) => i.component_id === compId);
       const quantity = Number(args.quantity);
+      // No se pide más de lo disponible; reducir o quitar siempre se permite.
+      if (quantity > (existing?.quantity ?? 0) && quantity > sellableOf(c)) {
+        throw new Error(
+          `Sin existencia para ensamble: ${c.sku} (pedido ${quantity}, disponible ${sellableOf(c)}).`,
+        );
+      }
       if (existing) {
         if (quantity === 0) list.splice(list.indexOf(existing), 1);
         else existing.quantity = quantity;

@@ -38,7 +38,6 @@ pub struct ParsedProduct {
     pub price_amount: Decimal,
     pub price_currency: Currency,
     pub on_promotion: bool,
-    pub stock: Stock,
     pub specs: Specs,
     /// Desglose por almacén para persistir en offer_stock.
     pub offer_stocks: BTreeMap<String, u32>,
@@ -83,7 +82,7 @@ impl ParsedProduct {
             on_promotion: self.on_promotion,
             offer_stocks,
             source: ComponentSource::Lista,
-            specs: self.specs,
+            specs: self.specs.clone(),
             supplier: supplier.clone(),
             stock_ensamble_total: stock_ensamble,
             stock_individual_total: stock_individual,
@@ -97,7 +96,14 @@ impl ParsedProduct {
                 stock_ensamble,
                 stock_individual,
                 cd_only,
+                price_overridden: false,
+                stock_overridden: false,
+                list_price: None,
+                list_stock: None,
             }],
+            overrides: Default::default(),
+            list_kind: kind,
+            list_specs: self.specs,
         }
     }
 }
@@ -114,12 +120,6 @@ pub struct ParsedCatalog {
 // ---------------------------------------------------------------------
 // Adaptadores de proveedor
 // ---------------------------------------------------------------------
-
-/// Columnas que un adaptador puede declarar requeridas para reconocer su
-/// formato (nombres normalizados de encabezado).
-pub struct Signature {
-    pub required: &'static [&'static str],
-}
 
 pub trait SupplierAdapter {
     fn id(&self) -> &'static str;
@@ -731,14 +731,12 @@ pub fn import_xlsx(path: &Path) -> Result<ParsedCatalog, String> {
         let description = get(Some(map.description));
         // CVA: el SKU real es el "Codigo de Fabricante" (la Clave es su
         // código interno). El SKU es índice obligatorio: filas sin él, fuera.
-        let mut supplier_code = String::new();
         if adapter.id() == "cva" {
             let headers: Vec<String> = rows[header_idx]
                 .iter()
                 .map(|c| normalize(&cell_text(c)))
                 .collect();
             if let Some(pos) = headers.iter().position(|h| h.contains("CODIGO DE FABRICANTE")) {
-                supplier_code = sku.clone();
                 sku = get(Some(pos));
             }
         }
@@ -823,7 +821,6 @@ pub fn import_xlsx(path: &Path) -> Result<ParsedCatalog, String> {
                 .promotion
                 .map(|i| matches!(normalize(&cell_text(&row[i])).as_str(), "SI" | "S" | "YES" | "1" | "TRUE" | "P"))
                 .unwrap_or(false),
-            stock,
             specs,
             supplier: adapter.id().to_string(),
             // Regla por proveedor: 'arroba' vende por CEN+AVE-2+CEDIS (ambos
@@ -876,8 +873,6 @@ pub fn import_xlsx(path: &Path) -> Result<ParsedCatalog, String> {
 fn d_upper(s: &str) -> String {
     s.to_uppercase()
 }
-
-fn void_kind(_k: ComponentKind) {}
 
 #[cfg(test)]
 mod tests {
@@ -986,8 +981,8 @@ mod tests {
         assert!(matches!(kind, ComponentKind::Case));
         assert_eq!(specs.includes_psu, Some(true));
         assert_eq!(specs.psu_watts, Some(700));
-        assert_eq!(case.stock.cedis, 2);
-        assert_eq!(case.stock.cmal, 9);
+        assert_eq!(case.offer_stocks.get("cedis"), Some(&2));
+        assert_eq!(case.offer_stocks.get("cmal"), Some(&9));
         assert!(case.on_promotion);
 
         let cooler = cat.products.iter().find(|p| p.sku == "ENF-LQ-240").unwrap();

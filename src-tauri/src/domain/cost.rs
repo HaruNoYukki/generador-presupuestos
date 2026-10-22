@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::domain::assembly::Slot;
     use crate::domain::component::{
-        Component, ComponentKind, ComponentSource, Condition, Specs, Stock,
+        Component, ComponentKind, ComponentSource, Condition, Specs,
     };
     use rust_decimal_macros::dec;
     use std::collections::{BTreeMap, HashMap};
@@ -86,6 +86,9 @@ mod tests {
             cd_only_best: false,
             offers: vec![],
             specs: Specs::default(),
+            overrides: Default::default(),
+            list_kind: kind,
+            list_specs: Specs::default(),
         }
     }
 

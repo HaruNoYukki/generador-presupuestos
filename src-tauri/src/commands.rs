@@ -5,11 +5,11 @@ use serde::Serialize;
 use tauri::State;
 use uuid::Uuid;
 
-use crate::catalog::NewComponentInput;
+use crate::catalog::{NewComponentInput, UpdateComponentInput};
 use crate::domain::assembly::{Assembly, ComponentLookup, Slot, ValidationReport};
 use crate::domain::component::{Component, ComponentKind};
 use crate::domain::money::{Currency, ExchangeRate, Money};
-use crate::store::{parse_uuid, AppState, CmdResult, SharedState};
+use crate::store::{parse_uuid, AppState, CmdResult, OutOfStockHit, SharedState};
 
 /// Componente + precio convertido a pesos (regla: T.C redondeado hacia arriba).
 #[derive(Serialize)]
@@ -101,6 +101,78 @@ pub fn remove_manual_component(state: State<'_, SharedState>, id: String) -> Cmd
     s.remove_manual_component(id)
 }
 
+/// Edita un componente existente desde el catálogo (maestro siempre;
+/// precio/existencia de la oferta indicada — en ofertas de lista queda
+/// como corrección protegida del import).
+#[tauri::command]
+pub fn update_component(
+    state: State<'_, SharedState>,
+    id: String,
+    input: UpdateComponentInput,
+) -> CmdResult<ComponentDto> {
+    let mut s = state.0.lock().unwrap();
+    let id = parse_uuid(&id)?;
+    let c = s.update_component(id, input)?;
+    let rate = s.rate();
+    Ok(dto(&c, &rate))
+}
+
+/// Quita la corrección manual de una oferta de lista ("usar lista"):
+/// vuelve a mandar el valor de la última importación.
+#[tauri::command]
+pub fn clear_offer_override(
+    state: State<'_, SharedState>,
+    id: String,
+    supplier: String,
+) -> CmdResult<ComponentDto> {
+    let mut s = state.0.lock().unwrap();
+    let id = parse_uuid(&id)?;
+    let c = s.clear_offer_override(id, &supplier)?;
+    let rate = s.rate();
+    Ok(dto(&c, &rate))
+}
+
+// ---------------------------------------------------------------------
+// Consultas XML de CVA (esqueleto: detalles del servicio por definir)
+// ---------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct CvaFeedConfigDto {
+    pub endpoint: String,
+    pub client_key: String,
+    pub configured: bool,
+}
+
+#[tauri::command]
+pub fn get_cva_feed_config(state: State<'_, SharedState>) -> CmdResult<CvaFeedConfigDto> {
+    let s = state.0.lock().unwrap();
+    let cfg = crate::cva_feed::get_config(&s.db()).unwrap_or_default();
+    let configured = cfg.is_configured();
+    Ok(CvaFeedConfigDto {
+        endpoint: cfg.endpoint,
+        client_key: cfg.client_key,
+        configured,
+    })
+}
+
+#[tauri::command]
+pub fn set_cva_feed_config(
+    state: State<'_, SharedState>,
+    config: crate::cva_feed::FeedConfig,
+) -> CmdResult<()> {
+    let s = state.0.lock().unwrap();
+    crate::cva_feed::set_config(&s.db(), &config)
+}
+
+#[tauri::command]
+pub fn cva_feed_query(
+    state: State<'_, SharedState>,
+    sku: String,
+) -> CmdResult<crate::cva_feed::FeedQuote> {
+    let s = state.0.lock().unwrap();
+    crate::cva_feed::query(&s.db(), &sku)
+}
+
 #[derive(Serialize)]
 pub struct RateInfo {
     pub rate: ExchangeRate,
@@ -168,7 +240,7 @@ pub struct AssemblySummary {
 }
 
 fn summarize(asm: &Assembly, state: &AppState) -> AssemblySummary {
-    use crate::domain::assembly::QuoteStatus;
+    
     let report = crate::domain::assembly::validate(asm, state.catalog());
     let today = chrono::Local::now().date_naive();
     AssemblySummary {
@@ -368,13 +440,17 @@ pub struct ImportSummary {
 }
 
 /// Importa un Excel de lista de precios (cualquier proveedor registrado)
-/// con UPSERT por SKU.
+/// con UPSERT por SKU. Para arroba y CVA, los SKUs que ya no vienen quedan
+/// agotados (`zeroed`). `out_of_stock` lista los componentes de ensambles
+/// vigentes que quedaron sin existencia suficiente.
 #[derive(Serialize)]
 pub struct XlsxImportSummary {
     pub updated: usize,
     pub inserted: usize,
+    pub zeroed: usize,
     pub total: usize,
     pub supplier: String,
+    pub out_of_stock: Vec<OutOfStockHit>,
 }
 
 #[tauri::command]
@@ -383,12 +459,14 @@ pub fn import_catalog_xlsx(
     path: String,
 ) -> CmdResult<XlsxImportSummary> {
     let mut s = state.0.lock().unwrap();
-    let (updated, inserted, supplier) = s.import_xlsx_catalog(&path)?;
+    let r = s.import_xlsx_catalog(&path)?;
     Ok(XlsxImportSummary {
-        updated,
-        inserted,
+        updated: r.updated,
+        inserted: r.inserted,
+        zeroed: r.zeroed,
         total: s.catalog().components.len(),
-        supplier,
+        supplier: r.supplier,
+        out_of_stock: r.out_of_stock,
     })
 }
 

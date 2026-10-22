@@ -170,6 +170,52 @@ pub struct Specs {
     pub card_type: Option<String>,
 }
 
+/// Correcciones manuales sobre el maestro que la importación de listas
+/// NUNCA pisa (p. ej. "este gabinete sí incluye fuente"). Solo se guardan
+/// las claves cuyo valor difiere de lo que trajo la lista; si el usuario
+/// deja un valor igual al de la lista, no se protege.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Overrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ComponentKind>,
+    /// Claves de `Specs` corregidas a mano (valor JSON tal como se
+    /// serializa `Specs`, puede ser `null` para "desconocido").
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub specs: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Overrides {
+    /// Specs efectivas: las de la lista con las claves corregidas encima.
+    pub fn apply_specs(&self, base: &Specs) -> Specs {
+        if self.specs.is_empty() {
+            return base.clone();
+        }
+        let mut v = serde_json::to_value(base).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(ref mut m) = v {
+            for (k, val) in &self.specs {
+                m.insert(k.clone(), val.clone());
+            }
+        }
+        serde_json::from_value(v).unwrap_or_else(|_| base.clone())
+    }
+
+    /// Claves de `edited` que difieren de `base`: exactamente lo que hay
+    /// que proteger de la próxima importación.
+    pub fn diff_specs(base: &Specs, edited: &Specs) -> serde_json::Map<String, serde_json::Value> {
+        let b = serde_json::to_value(base).unwrap_or(serde_json::Value::Null);
+        let e = serde_json::to_value(edited).unwrap_or(serde_json::Value::Null);
+        let mut out = serde_json::Map::new();
+        if let (serde_json::Value::Object(b), serde_json::Value::Object(e)) = (b, e) {
+            for (k, ev) in e {
+                if b.get(&k) != Some(&ev) {
+                    out.insert(k, ev);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Una oferta de un SKU por parte de un proveedor. El precio y la
 /// disponibilidad viven aquí, no en el maestro: varios proveedores pueden
 /// ofrecer el mismo SKU a distintos precios.
@@ -191,6 +237,20 @@ pub struct Offer {
     pub stock_individual: u32,
     /// Solo tiene disponibilidad en CD: no usable en ensambles.
     pub cd_only: bool,
+    /// Precio corregido a mano (protegido del import: la corrección de un
+    /// dato que la lista trae incompleto, p. ej. CVA).
+    #[serde(default)]
+    pub price_overridden: bool,
+    /// Existencia corregida a mano (misma protección).
+    #[serde(default)]
+    pub stock_overridden: bool,
+    /// Precio tal como lo trajo la lista; presente solo con override
+    /// activo, para que la interfaz ofrezca "usar lista".
+    #[serde(default)]
+    pub list_price: Option<Money>,
+    /// Existencia de la lista; presente solo con override activo.
+    #[serde(default)]
+    pub list_stock: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -227,12 +287,48 @@ pub struct Component {
     /// Desglose de inventario por proveedor.
     #[serde(default)]
     pub offers: Vec<Offer>,
+    /// Correcciones manuales protegidas de la importación. `kind` y
+    /// `specs` de arriba ya las tienen aplicadas.
+    #[serde(default)]
+    pub overrides: Overrides,
+    /// Tipo y specs tal como los trajo la lista (sin correcciones), para
+    /// que la interfaz pueda ofrecer "volver al valor de la lista".
+    #[serde(default = "default_list_kind")]
+    pub list_kind: ComponentKind,
+    #[serde(default)]
+    pub list_specs: Specs,
+}
+
+fn default_list_kind() -> ComponentKind {
+    ComponentKind::Other
 }
 
 impl Component {
     /// Precio del componente en pesos según el tipo de cambio dado.
     pub fn price_mxp(&self, rate: &ExchangeRate) -> Money {
         self.price.to_mxp(rate)
+    }
+
+    /// Existencia utilizable en un ensamble. Si el renglón fijó un
+    /// proveedor, cuenta solo esa oferta; si no, la suma de todas.
+    pub fn stock_for_assembly(&self, supplier: Option<&str>) -> u32 {
+        match supplier {
+            Some(s) => self
+                .offers
+                .iter()
+                .find(|o| o.supplier == s)
+                .map(|o| o.stock_ensamble)
+                .unwrap_or(0),
+            None => self.stock_ensamble_total,
+        }
+    }
+
+    /// El SKU tiene al menos una oferta que viene de un Excel de proveedor
+    /// (arroba/cva/generico); las capturas manual y PCH no cuentan.
+    pub fn has_list_offer(&self) -> bool {
+        self.offers
+            .iter()
+            .any(|o| !matches!(o.supplier.as_str(), "manual" | "pch"))
     }
 
     /// Descripción de la fuente incluida, si el gabinete trae una.

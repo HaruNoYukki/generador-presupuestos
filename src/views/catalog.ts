@@ -1,5 +1,4 @@
-// Vista del catálogo: exploración, búsqueda y alta manual de usados.
-import { api } from '../api';
+// Vista del catálogo: exploración, búsqueda, alta manual y edición.
 import { openProductForm } from './product_form';
 import { kindLabel, PICKABLE_KINDS } from '../meta';
 import { ComponentDto } from '../types';
@@ -13,7 +12,8 @@ interface CatalogState {
 
 export function createCatalogView(
   components: ComponentDto[],
-  onChanged: (components: ComponentDto[]) => void,
+  /** Recarga la lista compartida IN-PLACE (misma referencia). */
+  refresh: () => Promise<ComponentDto[]>,
 ): HTMLElement {
   const state: CatalogState = { components, filterKind: '', query: '' };
 
@@ -21,19 +21,23 @@ export function createCatalogView(
 
   function specBadges(c: ComponentDto): string[] {
     const s = c.specs ?? {};
+    // Las specs corregidas a mano (protegidas del import) llevan candado.
+    const locked = new Set(Object.keys(c.overrides?.specs ?? {}));
+    const lk = (key: string, text: string) => (locked.has(key) ? `🔒 ${text}` : text);
     const out: string[] = [];
-    if (s.socket) out.push(s.socket);
-    if (s.includes_cooler === true) out.push('trae disipador');
-    if (s.includes_cooler === false) out.push('sin disipador');
-    if (s.wattage) out.push(`${s.wattage}W`);
-    if (s.psu_watts) out.push(`PSU ${s.psu_watts}W incluida`);
-    if (s.includes_psu === true && !s.psu_watts) out.push('PSU incluida');
-    if (s.ddr) out.push(s.ddr);
-    if (s.capacity_gb && (c.kind === 'ram')) out.push(`${s.capacity_gb}GB`);
-    if (s.capacity_raw) out.push(s.capacity_raw);
-    if (s.ram_form && c.kind === 'ram') out.push(s.ram_form);
-    if (s.vram) out.push(s.vram);
-    if (s.inches) out.push(`${s.inches}"`);
+    if (s.socket) out.push(lk('socket', s.socket));
+    if (s.includes_cooler === true) out.push(lk('includes_cooler', 'trae disipador'));
+    if (s.includes_cooler === false) out.push(lk('includes_cooler', 'sin disipador'));
+    if (s.wattage) out.push(lk('wattage', `${s.wattage}W`));
+    if (s.psu_watts && s.includes_psu !== false) out.push(lk('psu_watts', `PSU ${s.psu_watts}W incluida`));
+    if (s.includes_psu === true && !s.psu_watts) out.push(lk('includes_psu', 'PSU incluida'));
+    if (s.includes_psu === false && c.kind === 'case') out.push(lk('includes_psu', 'sin PSU'));
+    if (s.ddr) out.push(lk('ddr', s.ddr));
+    if (s.capacity_gb && (c.kind === 'ram')) out.push(lk('capacity_gb', `${s.capacity_gb}GB`));
+    if (s.capacity_raw) out.push(lk('capacity_raw', s.capacity_raw));
+    if (s.ram_form && c.kind === 'ram') out.push(lk('ram_form', s.ram_form));
+    if (s.vram) out.push(lk('vram', s.vram));
+    if (s.inches) out.push(lk('inches', `${s.inches}"`));
     return out;
   }
 
@@ -82,6 +86,19 @@ export function createCatalogView(
     });
   }
 
+  async function afterSaved() {
+    await refresh();
+    tableZone.replaceChildren(renderTable());
+  }
+
+  function editButton(c: ComponentDto): HTMLElement {
+    const btn = el('button', { class: 'icon-btn', title: `Editar ${c.sku}` }, '✎');
+    btn.addEventListener('click', () => {
+      openProductForm({ initial: c, onSaved: afterSaved });
+    });
+    return btn;
+  }
+
   function renderTable() {
     const rows = filtered();
     const table = el('table', { class: 'catalog-table' },
@@ -94,17 +111,24 @@ export function createCatalogView(
           el('th', { class: 'num' }, 'Mejor precio'),
           el('th', { class: 'num' }, 'En pesos'),
           el('th', {}, 'Inventario'),
+          el('th', { class: 'col-actions' }, ''),
         ),
       ),
       el('tbody', {},
         ...rows.slice(0, 400).map((c) =>
-          el('tr', { class: c.condition === 'usado' ? 'row-used' : '' },
+          el('tr', {
+            class: [
+              c.condition === 'usado' ? 'row-used' : '',
+              c.stock_ensamble_total === 0 ? 'row-out' : '',
+            ].join(' ').trim(),
+          },
             el('td', {}, el('span', { class: `chip chip-${c.kind}` }, kindLabel(c.kind))),
             el('td', {},
               el('div', { class: 'desc' },
                 c.description,
                 c.on_promotion ? el('span', { class: 'chip chip-promo' }, 'PROMO') : null,
                 c.source === 'manual' ? el('span', { class: 'chip chip-manual' }, 'MANUAL') : null,
+                c.stock_ensamble_total === 0 ? el('span', { class: 'chip chip-danger' }, 'AGOTADO') : null,
               ),
               el('div', { class: 'sub' }, [
                 c.sku,
@@ -119,6 +143,7 @@ export function createCatalogView(
             ),
             el('td', { class: 'num strong' }, mxn(c.price_mxp.amount)),
             el('td', {}, inventoryBreakdown(c)),
+            el('td', { class: 'col-actions' }, editButton(c)),
           ),
         ),
       ),
@@ -168,16 +193,11 @@ export function createCatalogView(
       openProductForm({
         title: 'Agregar producto',
         defaultSupplier: 'manual',
-        onSaved: async () => {
-          const refreshed = await api.listComponents();
-          onChanged(refreshed);
-          tableZone.replaceChildren(renderTable());
-        },
+        onSaved: afterSaved,
       });
     });
 
-    const tableZone = el('div');
-    tableZone.append(renderTable());
+    tableZone.replaceChildren(renderTable());
 
     view.replaceChildren(
       el('div', { class: 'toolbar' }, search, clearSearch, kindSel, manualBtn),
@@ -185,6 +205,7 @@ export function createCatalogView(
     );
   }
 
+  const tableZone = el('div');
   render();
   return view;
 }

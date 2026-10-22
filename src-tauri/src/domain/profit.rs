@@ -23,13 +23,6 @@ use super::money::ExchangeRate;
 /// IVA vigente en México: 16% (compartido con el módulo de costo).
 pub const IVA_RATE: Decimal = rust_decimal_macros::dec!(0.16);
 
-/// Presets básicos de ganancia.
-pub const PRESETS: [Decimal; 3] = [
-    rust_decimal_macros::dec!(10),
-    rust_decimal_macros::dec!(20),
-    rust_decimal_macros::dec!(30),
-];
-
 fn round2(d: Decimal) -> Decimal {
     d.round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero)
 }
@@ -237,7 +230,7 @@ mod tests {
     use super::*;
     use crate::domain::assembly::Slot;
     use crate::domain::component::{
-        Component, ComponentKind, ComponentSource, Condition, Specs, Stock,
+        Component, ComponentKind, ComponentSource, Condition, Specs,
     };
     use crate::domain::money::{Currency, Money};
     use rust_decimal_macros::dec;
@@ -263,6 +256,9 @@ mod tests {
             cd_only_best: false,
             offers: vec![],
             specs: Specs::default(),
+            overrides: Default::default(),
+            list_kind: kind,
+            list_specs: Specs::default(),
         }
     }
 

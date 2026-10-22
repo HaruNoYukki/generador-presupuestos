@@ -133,15 +133,6 @@ pub enum QuoteType {
     Personalizado,
 }
 
-impl QuoteType {
-    pub fn label(&self) -> &'static str {
-        match self {
-            QuoteType::Preensamble => "Preensamble",
-            QuoteType::Personalizado => "Personalizado",
-        }
-    }
-}
-
 /// Estado de la cotización. "Caducada" se deriva de las fechas; "En
 /// fabricación" lo marca el negocio y BLOQUEA la caducidad (una cotización
 /// en fabricación siempre puede generar nota de venta).
@@ -151,16 +142,6 @@ pub enum QuoteStatus {
     Vigente,
     EnFabricacion,
     Caducada,
-}
-
-impl QuoteStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            QuoteStatus::Vigente => "Vigente",
-            QuoteStatus::EnFabricacion => "En fabricación",
-            QuoteStatus::Caducada => "Caducada",
-        }
-    }
 }
 
 /// Días naturales de vigencia de personalizadas y preensambladas generadas
@@ -453,6 +434,23 @@ pub fn validate<L: ComponentLookup>(assembly: &Assembly, catalog: &L) -> Validat
                 ),
                 Some(_) => {}
             }
+            // Existencia para ensamble: cuenta la oferta fijada en el renglón
+            // o la suma de todas. Es error para que no se confirme ni se
+            // venda un equipo con piezas agotadas.
+            if let Some(c) = catalog.get_component(&item.component_id) {
+                let disponible = c.stock_for_assembly(item.supplier.as_deref());
+                if item.quantity > disponible {
+                    issues.push(ValidationIssue::error(
+                        "out_of_stock",
+                        format!(
+                            "Sin existencia para ensamble: \"{}\" (pedido {}, disponible {}).",
+                            short(&c.description),
+                            item.quantity,
+                            disponible
+                        ),
+                    ));
+                }
+            }
         }
         // Slots de unidad única (CPU, tarjeta madre, gabinete, fuente).
         if !slot.multiple_allowed() && assembly.total_quantity(slot) > 1 {
@@ -735,7 +733,10 @@ mod tests {
             stock_individual_total: 20,
             cd_only_best: false,
             offers: vec![],
-            specs,
+            specs: specs.clone(),
+            overrides: Default::default(),
+            list_kind: kind,
+            list_specs: specs,
         }
     }
 
@@ -802,6 +803,56 @@ mod tests {
         assert!(report.is_valid, "issues: {:?}", report.issues);
         assert_eq!(report.psu, PsuCoverage::Dedicated);
         assert!(matches!(report.cooling, CoolingCoverage::IncludedInCpu { .. }));
+    }
+
+    /// Un componente agotado (o con menos existencia que la pedida) es
+    /// ERROR: el ensamble deja de ser válido. Con proveedor fijado en el
+    /// renglón cuenta solo esa oferta; sin fijar, la suma de ofertas.
+    #[test]
+    fn out_of_stock_component_invalidates_assembly() {
+        let (mut cat, mut asm) = full_setup(Some(true), false);
+        let mut psu = comp(Uuid::new_v4(), ComponentKind::Psu, Specs::default());
+        psu.stock_ensamble_total = 0;
+        asm.set_quantity(Slot::Psu, &psu, 1, None).unwrap();
+        cat.map.insert(psu.id, psu.clone());
+        let report = validate(&asm, &cat);
+        assert!(!report.is_valid);
+        let issue = report
+            .issues
+            .iter()
+            .find(|i| i.code == "out_of_stock")
+            .expect("debe reportar out_of_stock");
+        assert_eq!(issue.severity, Severity::Error);
+        assert!(issue.message.contains("disponible 0"), "{}", issue.message);
+
+        // Vuelve a haber existencia total, pero el renglón fijó un proveedor
+        // sin oferta: sigue siendo 0 para ese proveedor.
+        psu.stock_ensamble_total = 3;
+        psu.offers = vec![crate::domain::component::Offer {
+            supplier: "arroba".into(),
+            price: psu.price.clone(),
+            on_promotion: false,
+            stocks: BTreeMap::new(),
+            stock_label: String::new(),
+            stock_ensamble: 3,
+            stock_individual: 3,
+            cd_only: false,
+            price_overridden: false,
+            stock_overridden: false,
+            list_price: None,
+            list_stock: None,
+        }];
+        cat.map.insert(psu.id, psu.clone());
+        asm.set_quantity(Slot::Psu, &psu, 1, Some("pch".into())).unwrap();
+        assert!(validate(&asm, &cat).issues.iter().any(|i| i.code == "out_of_stock"));
+
+        // Fijando el proveedor que sí tiene, o sin fijar, queda válido.
+        asm.set_quantity(Slot::Psu, &psu, 1, Some("arroba".into())).unwrap();
+        assert!(validate(&asm, &cat).is_valid, "{:?}", validate(&asm, &cat).issues);
+        asm.set_quantity(Slot::Psu, &psu, 2, None).unwrap();
+        assert!(validate(&asm, &cat).is_valid);
+        asm.set_quantity(Slot::Psu, &psu, 4, None).unwrap();
+        assert!(!validate(&asm, &cat).is_valid, "pedido 4 > disponible 3");
     }
 
     #[test]

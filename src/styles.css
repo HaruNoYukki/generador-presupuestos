@@ -667,3 +667,33 @@ select.input { cursor: pointer; }
   gap: 6px;
   margin: 8px 0;
 }
+
+/* ---------- Existencias: agotados, bloqueos y candados ---------- */
+.chip-danger { color: var(--bad); border: 1px solid rgba(229, 83, 75, 0.5); font-weight: 700; }
+.chip-warn { color: var(--warn); border: 1px solid rgba(224, 160, 48, 0.5); font-weight: 700; }
+.catalog-table tr.row-out td { opacity: 0.6; }
+.catalog-table .col-actions { width: 36px; text-align: right; }
+.slot-item.out-of-stock {
+  border-color: rgba(229, 83, 75, 0.6);
+  background: rgba(229, 83, 75, 0.08);
+}
+.icon-btn[disabled] { opacity: 0.35; cursor: not-allowed; }
+.icon-btn[disabled]:hover { color: inherit; border-color: var(--border); }
+
+/* Edición de producto: campos de solo lectura y specs protegidas del import */
+.input-readonly { display: inline-block; opacity: 0.75; cursor: default; }
+.btn-xs { padding: 2px 8px; font-size: 12px; margin-top: 4px; }
+.spec-locked { border-left: 2px solid var(--warn); padding-left: 8px; }
+.spec-lock-label { color: var(--warn); font-weight: 600; }
+
+/* Informe post-import */
+.import-report { border-radius: 10px; padding: 12px 16px; margin: 10px 0; }
+.import-report.ok { border: 1px solid rgba(80, 200, 120, 0.4); background: rgba(80, 200, 120, 0.06); }
+.import-report.warn { border: 1px solid rgba(229, 83, 75, 0.5); background: rgba(229, 83, 75, 0.06); }
+.import-report h4 { margin: 0 0 4px; }
+.report-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.report-row { border-top: 1px solid var(--border); padding: 8px 0; }
+.report-row.newly-out .report-comp .strong { color: var(--bad); }
+.report-comp { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.report-asms { margin: 6px 0 0 18px; padding: 0; font-size: 13px; }
+.report-asms li { margin: 2px 0; }

@@ -55,8 +55,23 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
   }
 
   async function mutate(p: Promise<unknown>, assemblyId?: string) {
-    await p;
+    try {
+      await p;
+    } catch (e) {
+      // P. ej. "Sin existencia para ensamble": se muestra y se recarga el
+      // ensamble igual, por si el catálogo cambió debajo.
+      const banner = el('p', { class: 'form-error confirm-msg' }, String(e));
+      view.prepend(banner);
+      window.setTimeout(() => banner.remove(), 6000);
+    }
     await loadAssemblies(assemblyId ?? current?.id);
+  }
+
+  /** Existencia para ensamble del renglón: la oferta fijada o la suma. */
+  function availableFor(c: ComponentDto | undefined, supplier?: string | null): number {
+    if (!c) return 0;
+    if (supplier) return c.offers?.find((o) => o.supplier === supplier)?.stock_ensamble ?? 0;
+    return c.stock_ensamble_total;
   }
 
   // ------------------------------------------------------------------
@@ -102,19 +117,42 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         ...rows.slice(0, 60).map((c) => {
           const item = existingQty(c.id);
           // En ensambles solo pueden usarse productos con existencia de
-          // prioridad (arroba CEN/AVE-2/CEDIS o CVA Disp). Los SOLO-CD se
-          // muestran bloqueados y marcados.
-          // Solo los SOLO-CD de CVA quedan fuera de los ensambles.
-          // Los productos PCH (capturados a mano) sí pueden usarse: se
-          // advierte su existencia al marcar 'En fabricación'.
-          const noEnsamble = c.cd_only_best === true;
+          // prioridad (arroba CEN/AVE-2/CEDIS, CVA Disp, PCH/manual a mano).
+          // Los SOLO-CD de CVA y los AGOTADOS se muestran bloqueados.
+          const cdOnly = c.cd_only_best === true;
+          const sinStock = c.stock_ensamble_total <= 0;
+          const noEnsamble = cdOnly || sinStock;
           const supplierChip = el('span', { class: `chip chip-supplier supplier-${c.supplier || 'arroba'}` },
-            c.supplier === 'cva' ? 'CVA' : c.supplier === 'arroba' ? '@' : 'MANUAL');
-          const cdChip = c.cd_only_best || noEnsamble
+            c.supplier === 'cva' ? 'CVA' : c.supplier === 'arroba' ? '@' : (c.supplier || 'manual').toUpperCase());
+          const blockChip = cdOnly
             ? el('span', { class: 'chip chip-cd-only' }, 'SOLO CD · no ensamble')
-            : null;
+            : sinStock
+              ? el('span', { class: 'chip chip-danger' }, 'SIN EXISTENCIA')
+              : null;
           const others = (c.offers ?? []).filter((o) => o.supplier !== c.supplier);
           const chosenSupplier = item?.supplier ?? null;
+
+          const offerLines = (c.offers ?? []).map((o) => {
+            const oLabel = o.supplier === 'cva' ? 'CVA' : o.supplier === 'arroba' ? '@' : o.supplier.toUpperCase();
+            const elegido = chosenSupplier ? chosenSupplier === o.supplier : c.supplier === o.supplier;
+            const usable = !(o.cd_only && o.stock_ensamble === 0) && o.stock_ensamble > 0;
+            const useBtn = usable
+              ? el('button', { class: 'btn btn-sm btn-outline offer-use' }, elegido ? '✓ Usando' : 'Usar este')
+              : el('span', { class: 'chip chip-danger' }, o.stock_ensamble === 0 ? 'sin existencia' : 'solo CD');
+            if (usable && current) {
+              const currentId = current.id;
+              useBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                await mutate(api.setAssemblyItem(currentId, slot.id, c.id, 1, o.supplier));
+                closeModal();
+              });
+            }
+            return el('div', { class: 'offer-line' },
+              el('span', { class: `chip chip-supplier supplier-${o.supplier}` }, oLabel),
+              el('span', { class: 'strong' }, mxn(o.price.amount)),
+              el('span', { class: 'sub' }, o.stock_label),
+              useBtn);
+          });
 
           const row = el('div', { class: `picker-row${item ? ' picked' : ''}${noEnsamble ? ' disabled' : ''}` },
             el('div', { class: 'picker-desc' },
@@ -129,30 +167,18 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
                 ? el('button', { class: 'btn btn-sm btn-outline offer-toggle' },
                     `Ver otros proveedores (${others.length})`)
                 : null,
-              el('div', { class: 'offers-box hidden' },
-                ...(c.offers ?? []).map((o) => {
-                  const oLabel = o.supplier === 'cva' ? 'CVA' : o.supplier === 'arroba' ? '@' : o.supplier.toUpperCase();
-                  const elegido = chosenSupplier ? chosenSupplier === o.supplier : c.supplier === o.supplier;
-                  return el('div', { class: 'offer-line' },
-                    el('span', { class: `chip chip-supplier supplier-${o.supplier}` }, oLabel),
-                    el('span', { class: 'strong' }, mxn(o.price.amount)),
-                    el('span', { class: 'sub' }, o.stock_label),
-                    !noEnsamble
-                      ? el('button', { class: 'btn btn-sm btn-outline offer-use' },
-                          elegido ? '✓ Usando' : 'Usar este')
-                      : null);
-                })),
+              el('div', { class: 'offers-box hidden' }, ...offerLines),
             ),
             el('div', { class: 'picker-side' },
               el('div', { class: 'strong' }, mxn(c.price_mxp.amount), supplierChip),
               el('div', { class: 'sub' }, money0(c)),
-              cdChip,
+              blockChip,
               item
                 ? el('button', { class: 'btn btn-ghost btn-sm' }, `En ensamble (${item.qty})`)
                 : null,
             ),
           );
-          // Toggle y uso de ofertas de otros proveedores
+          // Toggle de ofertas de otros proveedores
           const toggle = row.querySelector('.offer-toggle');
           if (toggle) {
             toggle.addEventListener('click', (e) => {
@@ -160,23 +186,13 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
               row.querySelector('.offers-box')?.classList.toggle('hidden');
             });
           }
-          row.querySelectorAll('.offer-line .offer-use').forEach((btn, idx) => {
-            const offer = others[idx];
-            if (!offer || !current) return;
-            const currentId = current.id;
-            btn.addEventListener('click', async (e) => {
-              e.stopPropagation();
-              await mutate(
-                api.setAssemblyItem(currentId, slot.id, c.id, 1, offer.supplier),
-              );
-              closeModal();
-            });
-          });
-          if (noEnsamble) {
+          if (noEnsamble && !item) {
             row.addEventListener('click', (e) => {
               e.stopPropagation();
             });
           } else {
+            // Un componente ya en el ensamble siempre se puede quitar,
+            // aunque se haya agotado después de elegirlo.
             row.addEventListener('click', async () => {
               if (!current) return;
               const currentQty = existingQty(c.id);
@@ -258,32 +274,47 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     const body = el('div', { class: 'slot-items' });
     for (const item of items) {
       const c = map.get(item.component_id);
+      const available = availableFor(c, item.supplier);
+      const outOfStock = item.quantity > available;
       const qtyControls = slot.multiple
         ? [
             el('button', { class: 'icon-btn', title: 'Quitar una unidad' }, '−'),
-            el('button', { class: 'icon-btn', title: 'Agregar una unidad' }, '+'),
+            el('button', {
+              class: 'icon-btn',
+              title: item.quantity >= available ? `Sin más existencia (disponible ${available})` : 'Agregar una unidad',
+              disabled: item.quantity >= available,
+            }, '+'),
           ]
         : [];
       if (slot.multiple) {
         qtyControls[0].addEventListener('click', () =>
-          current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, item.quantity - 1)),
+          current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, item.quantity - 1, item.supplier)),
         );
         qtyControls[1].addEventListener('click', () =>
-          current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, item.quantity + 1)),
+          current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, item.quantity + 1, item.supplier)),
         );
       }
       const removeBtn = el('button', { class: 'icon-btn', title: 'Quitar' }, '✕');
       removeBtn.addEventListener('click', () =>
-        current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, 0)),
+        current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, 0, item.supplier)),
       );
 
       body.append(
-        el('div', { class: 'slot-item' },
+        el('div', { class: `slot-item${outOfStock ? ' out-of-stock' : ''}` },
           el('div', { class: 'slot-item-info' },
             el('div', { class: 'desc', title: c?.description },
-              c ? c.description : `Componente eliminado (${item.component_id.slice(0, 8)}…)`),
+              c ? c.description : `Componente eliminado (${item.component_id.slice(0, 8)}…)`,
+              outOfStock
+                ? el('span', { class: 'chip chip-danger' },
+                    available === 0 ? 'SIN EXISTENCIA' : `SOLO ${available} DISPONIBLE${available === 1 ? '' : 'S'}`)
+                : null,
+            ),
             c
-              ? el('div', { class: 'sub' }, [c.sku, c.brand, mxn(c.price_mxp.amount)].join(' · '))
+              ? el('div', { class: 'sub' },
+                  [c.sku, c.brand, mxn(c.price_mxp.amount),
+                   item.supplier ? `proveedor ${item.supplier}` : null,
+                   `disponible ${available}`]
+                    .filter(Boolean).join(' · '))
               : null,
           ),
           el('div', { class: 'slot-item-actions' },

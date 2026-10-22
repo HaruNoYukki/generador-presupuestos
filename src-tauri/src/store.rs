@@ -11,14 +11,59 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::catalog::{Catalog, CatalogSeed, NewComponentInput};
+use crate::catalog::{Catalog, NewComponentInput, UpdateComponentInput};
 use crate::db;
 use crate::domain::assembly::{self, Assembly, ComponentLookup, QuoteType, Slot};
-use crate::domain::component::Component;
+use crate::domain::component::{Component, ComponentKind};
 use crate::domain::money::{ExchangeRate, Money};
+
+/// Resultado de importar un Excel de proveedor.
+#[derive(Debug, Clone, Serialize)]
+pub struct XlsxImportResult {
+    pub updated: usize,
+    pub inserted: usize,
+    /// SKUs del proveedor que ya no venían en la lista y quedaron agotados.
+    pub zeroed: usize,
+    pub supplier: String,
+    pub out_of_stock: Vec<OutOfStockHit>,
+}
+
+/// Componente de un ensamble vigente cuya existencia disponible quedó por
+/// debajo de lo pedido tras la importación.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutOfStockHit {
+    pub component_id: Uuid,
+    pub sku: String,
+    pub description: String,
+    pub kind: ComponentKind,
+    /// Proveedor fijado en el renglón (None = mejor oferta).
+    pub supplier: Option<String>,
+    pub stock_after: u32,
+    /// `true` si ANTES de importar sí alcanzaba: se acaba de agotar.
+    pub newly_out: bool,
+    pub assemblies: Vec<AffectedAssembly>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AffectedAssembly {
+    pub id: Uuid,
+    pub name: String,
+    pub quote_type: QuoteType,
+    pub quote_number: Option<String>,
+    pub quantity: u32,
+}
+
+/// Renglón de un ensamble vigente con su disponibilidad ANTES de importar.
+struct LiveItem {
+    component_id: Uuid,
+    supplier: Option<String>,
+    quantity: u32,
+    available_before: u32,
+    assembly: AffectedAssembly,
+}
 
 #[derive(Debug, Default, Deserialize)]
 struct LegacyState {
@@ -55,19 +100,26 @@ impl AppState {
         let conn = db::open(&dir).expect("no se pudo abrir la base de datos");
         if db::count_products(&conn) == 0 {
             if let Some(json) = seed_json {
-                if let Ok(seed) = serde_json::from_str::<CatalogSeed>(json) {
-                    for c in &seed.components {
-                        let mut comp = c.clone();
-                        comp.supplier = "arroba".into();
-                        comp.stock_ensamble_total = comp.offer_stocks.values().sum();
-                        comp.stock_individual_total = comp.stock_ensamble_total;
-                        comp.offers.clear();
-                        db::upsert_master(&conn, &comp, true).expect("seed de productos");
-                        db::upsert_offer(&conn, &comp).expect("seed de ofertas");
+                // from_seed_json valida el T.C y normaliza el orden; si la
+                // semilla es inválida se arranca con catálogo vacío.
+                match Catalog::from_seed_json(json) {
+                    Ok(seed) => {
+                        for c in &seed.components {
+                            let mut comp = c.clone();
+                            comp.supplier = "arroba".into();
+                            comp.stock_ensamble_total = comp.offer_stocks.values().sum();
+                            comp.stock_individual_total = comp.stock_ensamble_total;
+                            comp.offers.clear();
+                            db::upsert_master(&conn, &comp, true).expect("seed de productos");
+                            db::upsert_offer(&conn, &comp).expect("seed de ofertas");
+                        }
+                        let _ = db::set_setting(&conn, "list_rate", &seed.exchange_rate.rate.to_string());
+                        let _ = db::set_setting(&conn, "list_date", &seed.list_date);
+                        let _ = db::set_setting(&conn, "source_file", &seed.source_file);
                     }
-                    let _ = db::set_setting(&conn, "list_rate", &seed.exchange_rate);
-                    let _ = db::set_setting(&conn, "list_date", &seed.list_date);
-                    let _ = db::set_setting(&conn, "source_file", &seed.source_file);
+                    Err(e) => {
+                        eprintln!("Semilla del catálogo inválida, se arranca sin catálogo: {e}");
+                    }
                 }
             }
         }
@@ -195,17 +247,23 @@ impl AppState {
     }
 
     pub fn import_catalog(&mut self, json: &str) -> Result<(usize, usize), String> {
-        let seed: CatalogSeed =
-            serde_json::from_str(json).map_err(|e| format!("JSON de catálogo inválido: {e}"))?;
-        self.apply_import(
+        // Misma validación que el arranque (from_seed_json valida el T.C).
+        let seed = Catalog::from_seed_json(json)
+            .map_err(|e| format!("JSON de catálogo inválido: {e}"))?;
+        let (updated, inserted, _) = self.apply_import(
             seed.components,
-            rust_decimal::Decimal::from_str_exact(&seed.exchange_rate).ok(),
+            Some(seed.exchange_rate.rate),
             seed.list_date,
             seed.source_file,
-        )
+            None,
+        )?;
+        Ok((updated, inserted))
     }
 
-    pub fn import_xlsx_catalog(&mut self, path: &str) -> Result<(usize, usize, String), String> {
+    /// Importa el Excel de un proveedor y devuelve, además de los
+    /// contadores, el informe de componentes que quedaron sin existencia
+    /// suficiente y están en un preensamble o personalizado vigente.
+    pub fn import_xlsx_catalog(&mut self, path: &str) -> Result<XlsxImportResult, String> {
         let parsed = crate::suppliers::import_xlsx(Path::new(path))?;
         let supplier = parsed.supplier.clone();
         let components: Vec<Component> = parsed
@@ -213,56 +271,161 @@ impl AppState {
             .into_iter()
             .map(|p| p.into_component())
             .collect();
-        let (updated, inserted) = self.apply_import(
+        let before = self.snapshot_live_items();
+        // El id del proveedor viaja en cada producto (`parsed.supplier` es
+        // el nombre para mostrar). Solo las listas COMPLETAS de arroba y
+        // CVA autorizan a dar por agotado lo que ya no viene; la genérica
+        // puede ser parcial.
+        let supplier_id = components
+            .first()
+            .map(|c| if c.supplier.is_empty() { "arroba".to_string() } else { c.supplier.clone() })
+            .unwrap_or_default();
+        let sweep = matches!(supplier_id.as_str(), "arroba" | "cva").then_some(supplier_id.as_str());
+        let (updated, inserted, zeroed) = self.apply_import(
             components,
             parsed.exchange_rate,
             parsed.list_date.unwrap_or_default(),
             format!("{} ({})", parsed.source_file, supplier),
+            sweep,
         )?;
-        Ok((updated, inserted, supplier))
+        let out_of_stock = self.out_of_stock_report(&before);
+        Ok(XlsxImportResult {
+            updated,
+            inserted,
+            zeroed,
+            supplier,
+            out_of_stock,
+        })
     }
 
+    /// Existencia disponible por renglón de cada ensamble VIGENTE antes de
+    /// importar: (component_id, supplier fijado) → (disponible, [referencias]).
+    fn snapshot_live_items(&self) -> Vec<LiveItem> {
+        let today = chrono::Local::now().date_naive();
+        let mut out = Vec::new();
+        for asm in self.assemblies.values() {
+            if asm.status(today) == assembly::QuoteStatus::Caducada {
+                continue;
+            }
+            for &slot in Slot::ALL.iter() {
+                for item in asm.items(slot) {
+                    let available_before = self
+                        .catalog
+                        .get_component(&item.component_id)
+                        .map(|c| c.stock_for_assembly(item.supplier.as_deref()))
+                        .unwrap_or(0);
+                    out.push(LiveItem {
+                        component_id: item.component_id,
+                        supplier: item.supplier.clone(),
+                        quantity: item.quantity,
+                        available_before,
+                        assembly: AffectedAssembly {
+                            id: asm.id,
+                            name: asm.name.clone(),
+                            quote_type: asm.quote_type,
+                            quote_number: asm.quote_number.clone(),
+                            quantity: item.quantity,
+                        },
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Compara el snapshot con el catálogo ya recargado: todo renglón cuya
+    /// existencia disponible quedó por debajo de lo pedido se reporta,
+    /// marcando si ANTES sí alcanzaba (`newly_out`).
+    fn out_of_stock_report(&self, before: &[LiveItem]) -> Vec<OutOfStockHit> {
+        let mut by_component: BTreeMap<(Uuid, Option<String>), OutOfStockHit> = BTreeMap::new();
+        for li in before {
+            let comp = self.catalog.get_component(&li.component_id);
+            let available_after = comp
+                .map(|c| c.stock_for_assembly(li.supplier.as_deref()))
+                .unwrap_or(0);
+            if available_after >= li.quantity {
+                continue;
+            }
+            let key = (li.component_id, li.supplier.clone());
+            let hit = by_component.entry(key).or_insert_with(|| OutOfStockHit {
+                component_id: li.component_id,
+                sku: comp.map(|c| c.sku.clone()).unwrap_or_default(),
+                description: comp
+                    .map(|c| c.description.clone())
+                    .unwrap_or_else(|| "(componente eliminado)".into()),
+                kind: comp.map(|c| c.kind).unwrap_or(crate::domain::component::ComponentKind::Other),
+                supplier: li.supplier.clone(),
+                stock_after: available_after,
+                newly_out: false,
+                assemblies: Vec::new(),
+            });
+            if li.available_before >= li.quantity {
+                hit.newly_out = true;
+            }
+            hit.assemblies.push(li.assembly.clone());
+        }
+        let mut hits: Vec<OutOfStockHit> = by_component.into_values().collect();
+        // Los que ACABAN de agotarse primero; luego por descripción.
+        hits.sort_by(|a, b| b.newly_out.cmp(&a.newly_out).then(a.description.cmp(&b.description)));
+        hits
+    }
+
+    /// UPSERT por SKU de todos los componentes y, si `sweep_supplier` viene,
+    /// barrido de existencias del proveedor para los SKUs ausentes. Todo en
+    /// una transacción: un Excel truncado no deja la base a medias.
+    /// Devuelve (actualizados, insertados, agotados por barrido).
     fn apply_import(
         &mut self,
         components: Vec<Component>,
         rate: Option<rust_decimal::Decimal>,
         list_date: String,
         source_file: String,
-    ) -> Result<(usize, usize), String> {
+        sweep_supplier: Option<&str>,
+    ) -> Result<(usize, usize, usize), String> {
+        let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let mut updated = 0usize;
         let mut inserted = 0usize;
+        let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in &components {
-            let existed = db::find_by_sku(&self.db, &c.sku).ok().flatten().is_some();
+            let existed = db::find_by_sku(&tx, &c.sku).ok().flatten().is_some();
             let supplier = if c.supplier.is_empty() { "arroba" } else { c.supplier.as_str() };
             let update_details = supplier == "arroba";
             let mut comp = c.clone();
             comp.supplier = supplier.to_string();
             normalize_title(&mut comp.description);
-            db::upsert_master(&self.db, &comp, update_details)
+            db::upsert_master(&tx, &comp, update_details)
                 .map_err(|e| format!("upsert_master {}: {e}", comp.sku))?;
-            db::upsert_offer(&self.db, &comp)
+            db::upsert_offer(&tx, &comp)
                 .map_err(|e| format!("upsert_offer {}: {e}", comp.sku))?;
+            present.insert(comp.sku.clone());
             if existed {
                 updated += 1;
             } else {
                 inserted += 1;
             }
         }
+        let zeroed = match sweep_supplier {
+            Some(s) if !components.is_empty() => {
+                db::zero_absent_offer_stock(&tx, s, &present).map_err(|e| e.to_string())?
+            }
+            _ => 0,
+        };
         if let Some(rate) = rate {
             let previo = rust_decimal::Decimal::from_str_exact(
-                &db::get_setting(&self.db, "list_rate").unwrap_or_default(),
+                &db::get_setting(&tx, "list_rate").unwrap_or_default(),
             )
             .unwrap_or(rate);
             let efectivo = rate.max(previo);
-            db::set_setting(&self.db, "list_rate", &efectivo.to_string())
+            db::set_setting(&tx, "list_rate", &efectivo.to_string())
                 .map_err(|e| e.to_string())?;
             if self.rate_override.is_none() {
                 self.catalog.set_exchange_rate(ExchangeRate::new(efectivo));
             }
             self.list_rate = ExchangeRate::new(efectivo);
         }
-        let _ = db::set_setting(&self.db, "list_date", &list_date);
-        let _ = db::set_setting(&self.db, "source_file", &source_file);
+        let _ = db::set_setting(&tx, "list_date", &list_date);
+        let _ = db::set_setting(&tx, "source_file", &source_file);
+        tx.commit().map_err(|e| e.to_string())?;
         let current_rate = self.catalog.exchange_rate;
         self.catalog = Catalog::from_parts(
             db::load_products(&self.db).map_err(|e| e.to_string())?,
@@ -271,7 +434,7 @@ impl AppState {
             source_file,
             list_date,
         );
-        Ok((updated, inserted))
+        Ok((updated, inserted, zeroed))
     }
 
     /// Mejora de títulos con Z.ai (requiere clave API en Ajustes). Solo
@@ -442,11 +605,28 @@ impl AppState {
                 .get(&id)
                 .ok_or_else(|| "Ensamble no encontrado".to_string())?;
             let today = chrono::Local::now().date_naive();
-            if asm.status(today) == crate::domain::assembly::QuoteStatus::Caducada {
+            // Regla del dominio: caducada no vende (en fabricación sí).
+            if !asm.can_issue_sale_note(today) {
                 return Err(format!(
                     "La cotización {} está CADUCADA (venció el {}): no se puede generar una nota de venta.",
                     asm.quote_number.as_deref().unwrap_or("sin folio"),
                     asm.expiry().format("%d/%m/%Y")
+                ));
+            }
+            // Un ensamble con componentes agotados (tras una actualización
+            // de lista) tampoco se vende.
+            let report = assembly::validate(asm, &self.catalog);
+            let agotados: Vec<String> = report
+                .issues
+                .iter()
+                .filter(|i| i.code == "out_of_stock")
+                .map(|i| i.message.clone())
+                .collect();
+            if !agotados.is_empty() {
+                return Err(format!(
+                    "La cotización {} tiene componentes sin existencia y no se puede vender: {}",
+                    asm.quote_number.as_deref().unwrap_or("sin folio"),
+                    agotados.join(" ")
                 ));
             }
         }
@@ -507,6 +687,24 @@ impl AppState {
             .assemblies
             .get_mut(&assembly_id)
             .ok_or_else(|| "Ensamble no encontrado".to_string())?;
+        // No se puede PEDIR más de lo que hay para ensamble. Reducir o
+        // quitar (quantity 0) siempre se permite, para poder corregir un
+        // ensamble cuyo componente se agotó después de armarlo.
+        let actual = asm
+            .items(slot)
+            .iter()
+            .find(|i| i.component_id == component_id)
+            .map(|i| i.quantity)
+            .unwrap_or(0);
+        if quantity > actual {
+            let disponible = component.stock_for_assembly(supplier.as_deref());
+            if quantity > disponible {
+                return Err(format!(
+                    "Sin existencia para ensamble: {} (pedido {}, disponible {}).",
+                    component.sku, quantity, disponible
+                ));
+            }
+        }
         asm.set_quantity(slot, &component, quantity, supplier)
             .map_err(|e| e.to_string())?;
         let clone = asm.clone();
@@ -588,26 +786,161 @@ impl AppState {
         c.stock_ensamble_total = existencia;
         c.stock_individual_total = existencia;
         c.offer_stocks.clear();
-        if es_pch && existencia > 0 {
-            c.offer_stocks.insert("pch_existencia".into(), existencia);
+        if existencia > 0 {
+            c.offer_stocks
+                .insert(format!("{}_existencia", c.supplier), existencia);
         }
         c.offers = vec![crate::domain::component::Offer {
             supplier: c.supplier.clone(),
             price: c.price.clone(),
             on_promotion: c.on_promotion,
-            stock_label: if es_pch {
-                format!("Existencia {existencia}")
-            } else {
-                String::new()
-            },
+            stock_label: format!("Existencia {existencia}"),
             stocks: c.offer_stocks.clone(),
             stock_ensamble: existencia,
             stock_individual: existencia,
             cd_only: false,
+            price_overridden: false,
+            stock_overridden: false,
+            list_price: None,
+            list_stock: None,
         }];
         db::upsert_master(&self.db, &c, true).map_err(|e| e.to_string())?;
         db::upsert_offer(&self.db, &c).map_err(|e| e.to_string())?;
-        Ok(c)
+        // El catálogo en memoria recibió una copia sin oferta ni existencia
+        // (add_manual la crea antes de fijarlas): se recarga desde la base
+        // para que la validación de stock vea lo que realmente se guardó.
+        self.reload_catalog()?;
+        self.catalog
+            .get_component(&c.id)
+            .cloned()
+            .ok_or_else(|| "No se pudo recargar el componente".into())
+    }
+
+    /// Edita un componente existente. El maestro (descripción, marca, tipo,
+    /// condición, specs) siempre; precio/existencia solo de una oferta
+    /// `manual` o `pch` — las de lista se actualizan con el Excel.
+    pub fn update_component(
+        &mut self,
+        id: Uuid,
+        input: UpdateComponentInput,
+    ) -> Result<Component, String> {
+        let existing = self
+            .catalog
+            .get_component(&id)
+            .cloned()
+            .ok_or_else(|| "Componente no encontrado en el catálogo".to_string())?;
+        if input.description.trim().is_empty() {
+            return Err("La descripción es obligatoria".into());
+        }
+        let mut description = input.description.trim().to_string();
+        normalize_title(&mut description);
+        let brand = input
+            .brand
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .unwrap_or("SIN MARCA");
+
+        let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        db::update_master_manual(
+            &tx,
+            &id.to_string(),
+            &description,
+            brand,
+            input.condition,
+            input.kind,
+            &input.specs,
+            existing.has_list_offer(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        if let Some(supplier) = input.supplier.as_deref() {
+            let offer = existing
+                .offers
+                .iter()
+                .find(|o| o.supplier == supplier)
+                .ok_or_else(|| format!("El componente no tiene una oferta del proveedor {supplier}"))?;
+            let amount = match input.price_amount.as_deref() {
+                Some(a) => rust_decimal::Decimal::from_str_exact(a.trim())
+                    .map_err(|_| format!("Precio inválido: {a}"))?,
+                None => offer.price.amount,
+            };
+            if amount < rust_decimal::Decimal::ZERO {
+                return Err("El precio debe ser mayor o igual a cero".into());
+            }
+            let currency = input.price_currency.unwrap_or(offer.price.currency);
+            let money = Money::new(amount, currency);
+            let stock = input.stock.unwrap_or(offer.stock_ensamble);
+
+            match supplier {
+                // Captura a mano (sin Excel): se escribe directo en la oferta.
+                "manual" | "pch" => {
+                    db::update_offer_manual(&tx, &existing.sku, supplier, &money, stock)
+                        .map_err(|e| e.to_string())?;
+                }
+                // Oferta de lista (arroba/cva/…): el Excel trae datos
+                // incompletos, así que se permite corregir. Solo se protege
+                // lo que difiere del valor vigente; si se deja igual a la
+                // lista, la próxima importación vuelve a mandar.
+                _ => {
+                    let price_changed = money != offer.price;
+                    let stock_changed = stock != offer.stock_ensamble;
+                    if price_changed || stock_changed {
+                        db::set_offer_override(
+                            &tx,
+                            &existing.sku,
+                            supplier,
+                            price_changed.then_some(&money),
+                            stock_changed.then_some(stock),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.reload_catalog()?;
+        self.catalog
+            .get_component(&id)
+            .cloned()
+            .ok_or_else(|| "No se pudo recargar el componente".into())
+    }
+
+    /// Quita la corrección manual de una oferta de lista ("usar lista"):
+    /// vuelve a mandar el valor que trajo la última importación.
+    pub fn clear_offer_override(&mut self, id: Uuid, supplier: &str) -> Result<Component, String> {
+        let existing = self
+            .catalog
+            .get_component(&id)
+            .cloned()
+            .ok_or_else(|| "Componente no encontrado en el catálogo".to_string())?;
+        if matches!(supplier, "manual" | "pch") {
+            return Err("Las ofertas capturadas a mano no tienen valor de lista que restablecer".into());
+        }
+        let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        db::clear_offer_override(&tx, &existing.sku, supplier).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        self.reload_catalog()?;
+        self.catalog
+            .get_component(&id)
+            .cloned()
+            .ok_or_else(|| "No se pudo recargar el componente".into())
+    }
+
+    /// Reconstruye el catálogo en memoria desde la base conservando
+    /// tipo de cambio, archivo y fecha de lista.
+    fn reload_catalog(&mut self) -> Result<(), String> {
+        let current_rate = self.catalog.exchange_rate;
+        let source_file = self.catalog.source_file.clone();
+        let list_date = self.catalog.list_date.clone();
+        self.catalog = Catalog::from_parts(
+            db::load_products(&self.db).map_err(|e| e.to_string())?,
+            current_rate,
+            "USD→MXP: tipo de cambio redondeado hacia arriba al entero superior",
+            source_file,
+            list_date,
+        );
+        Ok(())
     }
 
     pub fn remove_manual_component(&mut self, id: Uuid) -> Result<bool, String> {
@@ -637,7 +970,7 @@ pub fn parse_uuid(s: &str) -> Result<Uuid, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::component::ComponentKind;
+    use crate::domain::component::{ComponentKind, Overrides};
 
     /// Semilla sintética para pruebas (datos inventados, sin precios reales
     /// de proveedores — los fixtures del repo son seguros de publicar).
@@ -650,57 +983,57 @@ mod tests {
             {"id": "11111111-1111-4111-8111-111111111101", "sku": "100-100001582WOF", "barcode": null,
              "description": "PROCESADOR AMD RYZEN 7 5800XT AM4 8NUCLEOS NO INCLUYE DISIPADOR",
              "brand": "AMD", "department": "PROCESADORES", "kind": "cpu", "condition": "nuevo",
-             "price": {"amount": "210.50", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "210.50", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"socket": "AM4", "includes_cooler": false}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111102", "sku": "100-100000263BOX", "barcode": null,
              "description": "PROCESADOR AMD RYZEN 7 5700G AM4 CON GRAFICAS CON DISIPADOR",
              "brand": "AMD", "department": "PROCESADORES", "kind": "cpu", "condition": "nuevo",
-             "price": {"amount": "314.06", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "314.06", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"socket": "AM4", "includes_cooler": true}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111103", "sku": "MB-AM5-TEST", "barcode": null,
              "description": "MB TEST AM5 DDR5 PCIE4.0",
              "brand": "TEST", "department": "MOTHER BOARD", "kind": "motherboard", "condition": "nuevo",
-             "price": {"amount": "120.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "120.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"socket": "AM5", "ddr": "DDR5", "form_factor": "ATX"}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111104", "sku": "MB-AM4-TEST", "barcode": null,
              "description": "MB TEST AM4 DDR4 MATX",
              "brand": "TEST", "department": "MOTHER BOARD", "kind": "motherboard", "condition": "nuevo",
-             "price": {"amount": "80.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "80.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"socket": "AM4", "ddr": "DDR4", "form_factor": "MICRO ATX"}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111105", "sku": "RAM-DDR5-TEST", "barcode": null,
              "description": "MEMORIA RAM DIMM 16GB DDR5 5600MHZ",
              "brand": "TEST", "department": "MEMORIA RAM", "kind": "ram", "condition": "nuevo",
-             "price": {"amount": "60.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "60.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"ddr": "DDR5", "ram_form": "DIMM", "capacity_gb": 16}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111106", "sku": "RAM-DDR4-TEST", "barcode": null,
              "description": "MEMORIA RAM DIMM 16GB DDR4 3200MHZ",
              "brand": "TEST", "department": "MEMORIA RAM", "kind": "ram", "condition": "nuevo",
-             "price": {"amount": "40.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "40.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"ddr": "DDR4", "ram_form": "DIMM", "capacity_gb": 16}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111107", "sku": "SSD-1TB-TEST", "barcode": null,
              "description": "SSD INTERNO 1TB NVME",
              "brand": "TEST", "department": "SSD INTERNO", "kind": "storage", "condition": "nuevo",
-             "price": {"amount": "55.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "55.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"storage_kind": "ssd", "internal": true, "capacity_raw": "1TB"}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111108", "sku": "PSU-650-TEST", "barcode": null,
              "description": "FUENTE DE PODER TEST 650W BRONCE",
              "brand": "TEST", "department": "COMPONENTES", "kind": "psu", "condition": "nuevo",
-             "price": {"amount": "45.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "45.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"wattage": 650}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111109", "sku": "EV-1015", "barcode": null,
              "description": "GABINETE TEST ATX CON FUENTE 600W",
              "brand": "TEST", "department": "COMPONENTES", "kind": "case", "condition": "nuevo",
-             "price": {"amount": "269.57", "currency": "MXP"}, "on_promotion": false,
+             "price": {"amount": "269.57", "currency": "MXP"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {"includes_psu": true, "psu_watts": 600, "form_factor": "ATX"}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111110", "sku": "ENF-AIRE-TEST", "barcode": null,
              "description": "VENTILADOR TEST 120MM PWM",
              "brand": "TEST", "department": "ENFRIAMIENTO", "kind": "cooler_air", "condition": "nuevo",
-             "price": {"amount": "10.00", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "10.00", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {}, "source": "lista"},
             {"id": "11111111-1111-4111-8111-111111111111", "sku": "ENF-LQ-240", "barcode": null,
              "description": "ENFRIAMIENTO LIQUIDO TEST 240MM",
              "brand": "TEST", "department": "ENFRIAMIENTO", "kind": "cooler_liquid", "condition": "nuevo",
-             "price": {"amount": "89.90", "currency": "USD"}, "on_promotion": false,
+             "price": {"amount": "89.90", "currency": "USD"}, "on_promotion": false, "offer_stocks": {"a_cen": 5},
              "specs": {}, "source": "lista"}
         ]
     }"#;
@@ -1021,16 +1354,23 @@ mod tests {
         path.push("lista.xlsx");
         std::fs::write(&path, bytes).unwrap();
 
-        let (updated, inserted, supplier) = state.import_xlsx_catalog(path.to_str().unwrap()).unwrap();
-        assert_eq!(supplier.contains("arroba"), true, "supplier={supplier}");
-        assert_eq!(updated, 3, "5800XT, EV-1015 y ENF-LQ-240 ya existían");
-        assert_eq!(inserted, 1, "solo la RAM Kingston es nueva");
+        let r = state.import_xlsx_catalog(path.to_str().unwrap()).unwrap();
+        assert!(r.supplier.contains("arroba"), "supplier={}", r.supplier);
+        assert_eq!(r.updated, 3, "5800XT, EV-1015 y ENF-LQ-240 ya existían");
+        assert_eq!(r.inserted, 1, "solo la RAM Kingston es nueva");
 
         // El gabinete se actualizó (700W) conservando su id
         let case = state.find_by_sku("EV-1015").unwrap();
         assert_eq!(case.specs.psu_watts, Some(700));
         assert_eq!(case.price.amount, rust_decimal_macros::dec!(300));
         assert_eq!(case.id, id_original, "el id se conserva");
+
+        // Barrido: los SKUs del SEED que no vienen en el Excel de arroba
+        // quedan agotados pero conservan su oferta (último precio).
+        assert_eq!(r.zeroed, 8, "11 del SEED − 3 que sí venían");
+        let swept = state.find_by_sku("PSU-650-TEST").expect("la oferta se conserva");
+        assert_eq!(swept.stock_ensamble_total, 0);
+        assert_eq!(swept.price.amount, rust_decimal_macros::dec!(45.00));
 
         // El T.C de la lista nueva se aplicó (18.75 → efectivo 19)
         assert_eq!(state.list_rate().effective(), rust_decimal::Decimal::from(19));
@@ -1048,7 +1388,7 @@ mod tests {
         let db_dir = std::path::PathBuf::from(home.clone())
             .join("Library/Application Support/com.harunoyukki.generador-presupuestos");
         let xls = std::path::PathBuf::from(home).join("Downloads/dtihoxjk4d.xls");
-        let mut state = AppState::load(Some(SEED), db_dir.clone());
+        let state = AppState::load(Some(SEED), db_dir.clone());
 
         // Limpiar ofertas CVA previas (claves internas obsoletas)
         {
@@ -1066,10 +1406,13 @@ mod tests {
         }
         // Recargar tras la limpieza
         let mut state = AppState::load(Some(SEED), db_dir.clone());
-        let (updated, inserted, supplier) =
-            state.import_xlsx_catalog(xls.to_str().unwrap()).expect("importar CVA");
+        let r = state.import_xlsx_catalog(xls.to_str().unwrap()).expect("importar CVA");
         println!(
-            "CVA reimportado con SKU de Código de Fabricante ({supplier}): {updated} actualizados, {inserted} nuevos, total {}",
+            "CVA reimportado con SKU de Código de Fabricante ({}): {} actualizados, {} nuevos, {} agotados, total {}",
+            r.supplier,
+            r.updated,
+            r.inserted,
+            r.zeroed,
             state.catalog().components.len()
         );
     }
@@ -1276,6 +1619,232 @@ mod tests {
         assert_eq!(legacy.quote_type, crate::domain::assembly::QuoteType::Preensamble);
         assert!(dir.join("state.json.migrated").exists());
         assert!(!dir.join("state.json").exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_fixture(dir: &PathBuf) -> String {
+        let bytes = include_bytes!("../tests/fixtures/lista_nykniu.xlsx");
+        let path = dir.join("lista.xlsx");
+        std::fs::write(&path, bytes).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    fn edit_input(c: &Component) -> UpdateComponentInput {
+        UpdateComponentInput {
+            description: c.description.clone(),
+            brand: Some(c.brand.clone()),
+            kind: c.kind,
+            condition: c.condition,
+            specs: c.specs.clone(),
+            supplier: None,
+            price_amount: None,
+            price_currency: None,
+            stock: None,
+        }
+    }
+
+    /// Marcar a mano "este gabinete NO incluye fuente" sobre un SKU de lista
+    /// se guarda como override (solo la clave que difiere) y sobrevive a la
+    /// siguiente importación de arroba, que sí pisa el resto de specs.
+    #[test]
+    fn manual_spec_override_survives_arroba_reimport() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let case = state.find_by_sku("EV-1015").unwrap();
+        assert_eq!(case.specs.includes_psu, Some(true));
+        assert!(case.has_list_offer());
+
+        let mut input = edit_input(&case);
+        input.specs.includes_psu = Some(false);
+        let edited = state.update_component(case.id, input).unwrap();
+        assert_eq!(edited.specs.includes_psu, Some(false));
+        assert_eq!(edited.list_specs.includes_psu, Some(true), "la lista no se toca");
+        assert_eq!(edited.overrides.specs.len(), 1, "solo la clave corregida: {:?}", edited.overrides.specs);
+        assert!(edited.overrides.specs.contains_key("includes_psu"));
+        assert!(edited.included_psu_spec().is_none());
+
+        // Re-importar arroba: la lista trae EV-1015 CON FUENTE 700W.
+        let path = write_fixture(&dir);
+        state.import_xlsx_catalog(&path).unwrap();
+        let after = state.find_by_sku("EV-1015").unwrap();
+        assert_eq!(after.specs.includes_psu, Some(false), "el override gana");
+        assert_eq!(after.specs.psu_watts, Some(700), "lo no corregido sí se actualiza");
+        assert_eq!(after.list_specs.psu_watts, Some(700));
+
+        // Volver al valor de la lista limpia el override.
+        let mut input = edit_input(&after);
+        input.specs.includes_psu = Some(true);
+        let restored = state.update_component(after.id, input).unwrap();
+        assert!(restored.overrides == Overrides::default(), "{:?}", restored.overrides);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Precio y existencia de una oferta de LISTA se corrigen a mano como
+    /// override protegido del import (el Excel de CVA trae datos
+    /// incompletos); las ofertas manual/PCH se escriben directo.
+    #[test]
+    fn update_component_manual_offer_and_list_price_rules() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let cpu = state.find_by_sku("100-100001582WOF").unwrap();
+        assert_eq!(cpu.price.amount, rust_decimal_macros::dec!(210.50));
+
+        // Corrección de precio sobre la oferta arroba: override con los
+        // valores de lista preservados para poder revertir.
+        let mut input = edit_input(&cpu);
+        input.supplier = Some("arroba".into());
+        input.price_amount = Some("1".into());
+        let edited = state.update_component(cpu.id, input).unwrap();
+        assert_eq!(edited.price.amount, rust_decimal_macros::dec!(1));
+        let arroba = edited.offers.iter().find(|o| o.supplier == "arroba").unwrap();
+        assert!(arroba.price_overridden);
+        assert!(!arroba.stock_overridden);
+        assert_eq!(arroba.list_price.as_ref().unwrap().amount, rust_decimal_macros::dec!(210.50));
+        assert_eq!(arroba.list_stock, None, "solo se corrigió el precio");
+
+        // Dejar el precio igual al vigente no crea override nuevo.
+        let mut input = edit_input(&edited);
+        input.supplier = Some("arroba".into());
+        input.price_amount = Some("1".into());
+        let same = state.update_component(edited.id, input).unwrap();
+        assert!(same.offers[0].price_overridden, "el override previo se conserva");
+
+        let manual = state
+            .add_manual_component(NewComponentInput {
+                description: "GPU USADA".into(),
+                sku: Some("USADA-GPU".into()),
+                brand: None,
+                kind: crate::domain::component::ComponentKind::Gpu,
+                price_amount: "500".into(),
+                price_currency: crate::domain::money::Currency::Mxp,
+                condition: crate::domain::component::Condition::Usado,
+                specs: crate::domain::component::Specs::default(),
+                supplier: None,
+                stock: Some(2),
+            })
+            .unwrap();
+        assert_eq!(manual.stock_ensamble_total, 2, "la existencia manual se persiste");
+        assert!(!manual.has_list_offer());
+
+        let mut input = edit_input(&manual);
+        input.description = "GPU USADA RTX 3060".into();
+        input.specs.vram = Some("12GB".into());
+        input.supplier = Some("manual".into());
+        input.price_amount = Some("650".into());
+        input.stock = Some(7);
+        let edited = state.update_component(manual.id, input).unwrap();
+        assert_eq!(edited.description, "GPU USADA RTX 3060");
+        assert_eq!(edited.specs.vram.as_deref(), Some("12GB"));
+        assert!(edited.overrides == Overrides::default(), "sin lista no hay override");
+        assert_eq!(edited.price.amount, rust_decimal_macros::dec!(650));
+        assert_eq!(edited.stock_ensamble_total, 7);
+
+        let reloaded = AppState::load(Some(SEED), dir.clone());
+        let saved = reloaded.find_by_sku("USADA-GPU").unwrap();
+        assert_eq!(saved.stock_ensamble_total, 7);
+        assert_eq!(saved.price.amount, rust_decimal_macros::dec!(650));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// La corrección de una oferta de lista sobrevive a la reimportación
+    /// del Excel (que sí actualiza lo no corregido), y "usar lista" la
+    /// revierte al valor importado.
+    #[test]
+    fn list_offer_override_survives_reimport_and_reverts() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let psu = state.find_by_sku("PSU-650-TEST").unwrap();
+
+        // Corregir la oferta arroba: precio y existencia.
+        let mut input = edit_input(&psu);
+        input.supplier = Some("arroba".into());
+        input.price_amount = Some("99".into());
+        input.stock = Some(42);
+        let edited = state.update_component(psu.id, input).unwrap();
+        assert_eq!(edited.price.amount, rust_decimal_macros::dec!(99));
+        assert_eq!(edited.stock_ensamble_total, 42);
+
+        // Reimportar arroba: la lista trae PSU-650-TEST con stock 0 (no
+        // viene y el barrido lo agotaría), pero el override gana.
+        let path = write_fixture(&dir);
+        state.import_xlsx_catalog(&path).unwrap();
+        let after = state.find_by_sku("PSU-650-TEST").unwrap();
+        assert_eq!(after.price.amount, rust_decimal_macros::dec!(99), "el override de precio gana");
+        assert_eq!(after.stock_ensamble_total, 42, "el override de existencia gana");
+        let arroba = after.offers.iter().find(|o| o.supplier == "arroba").unwrap();
+        assert_eq!(arroba.list_stock, Some(0), "la lista trajo agotado");
+        assert_eq!(arroba.stock_label, "Editado a mano: 42");
+
+        // Otro SKU sin override sí sigue la lista: quedó agotado por el barrido.
+        let swept = state.find_by_sku("SSD-1TB-TEST").unwrap();
+        assert_eq!(swept.stock_ensamble_total, 0);
+
+        // "Usar lista" revierte al valor importado.
+        let reverted = state.clear_offer_override(after.id, "arroba").unwrap();
+        assert_eq!(reverted.price.amount, rust_decimal_macros::dec!(45.00));
+        assert_eq!(reverted.stock_ensamble_total, 0);
+        let arroba = reverted.offers.iter().find(|o| o.supplier == "arroba").unwrap();
+        assert!(!arroba.price_overridden && !arroba.stock_overridden);
+        assert!(arroba.list_price.is_none() && arroba.list_stock.is_none());
+
+        // Revertir una oferta manual no procede.
+        let err = state.clear_offer_override(psu.id, "pch").unwrap_err();
+        assert!(err.contains("no tienen valor de lista"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// El informe post-import lista los componentes de ensambles vigentes
+    /// que quedaron sin existencia suficiente, marcando los que ACABAN de
+    /// agotarse; los que siguen con existencia no aparecen.
+    #[test]
+    fn xlsx_import_reports_live_assemblies_out_of_stock() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let psu = state.find_by_sku("PSU-650-TEST").unwrap();
+        let case = state.find_by_sku("EV-1015").unwrap();
+        let asm = state.create_assembly("Oficina".into(), QuoteType::Preensamble);
+        state.set_assembly_item(asm.id, Slot::Psu, psu.id, 1, None).unwrap();
+        state.set_assembly_item(asm.id, Slot::Case, case.id, 1, None).unwrap();
+        let asm2 = state.create_assembly("Gamer".into(), QuoteType::Personalizado);
+        state.set_assembly_item(asm2.id, Slot::Psu, psu.id, 2, None).unwrap();
+
+        let path = write_fixture(&dir);
+        let r = state.import_xlsx_catalog(&path).unwrap();
+        assert_eq!(r.out_of_stock.len(), 1, "{:?}", r.out_of_stock);
+        let hit = &r.out_of_stock[0];
+        assert_eq!(hit.sku, "PSU-650-TEST");
+        assert_eq!(hit.stock_after, 0);
+        assert!(hit.newly_out);
+        let names: Vec<&str> = hit.assemblies.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"Oficina") && names.contains(&"Gamer"), "{names:?}");
+        assert!(hit.assemblies.iter().any(|a| a.quantity == 2));
+
+        // La validación del ensamble ahora lo marca y bloquea confirmar.
+        let report = state.validate(asm.id).unwrap();
+        assert!(report.issues.iter().any(|i| i.code == "out_of_stock"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// No se puede pedir más de lo disponible; reducir o quitar siempre.
+    #[test]
+    fn set_assembly_item_respects_available_stock() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let psu = state.find_by_sku("PSU-650-TEST").unwrap();
+        assert_eq!(psu.stock_ensamble_total, 5);
+        let asm = state.create_assembly("Tope".into(), QuoteType::Personalizado);
+        state.set_assembly_item(asm.id, Slot::Psu, psu.id, 5, None).unwrap();
+        let err = state.set_assembly_item(asm.id, Slot::Psu, psu.id, 6, None).unwrap_err();
+        assert!(err.contains("disponible 5"), "{err}");
+
+        // Tras agotarse, reducir se permite; subir no.
+        let path = write_fixture(&dir);
+        state.import_xlsx_catalog(&path).unwrap();
+        assert_eq!(state.find_by_sku("PSU-650-TEST").unwrap().stock_ensamble_total, 0);
+        state.set_assembly_item(asm.id, Slot::Psu, psu.id, 2, None).unwrap();
+        assert!(state.set_assembly_item(asm.id, Slot::Psu, psu.id, 3, None).is_err());
+        let cleared = state.set_assembly_item(asm.id, Slot::Psu, psu.id, 0, None).unwrap();
+        assert_eq!(cleared.total_quantity(Slot::Psu), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

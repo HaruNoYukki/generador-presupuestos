@@ -1,14 +1,15 @@
 //! Venta individual (flujo 2): carrito de cualquier producto del catálogo.
 //!
 //! A diferencia de un ensamble, no hay slots mínimos ni confirmación: el
-//! carrito es la sesión de venta directa. Las reglas económicas son las
+//! carrito vive en la sesión del frontend (`Vec<CartItem>` en main.ts) y
+//! solo regresa al backend para calcular. Las reglas económicas son las
 //! mismas (ganancia %, IVA recalculado con el objetivo) vía profit.rs.
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::component::{Component, Stock};
+use crate::domain::component::Component;
 use crate::domain::money::ExchangeRate;
 use crate::domain::profit::{self, ProfitLine, ProfitReport};
 
@@ -16,41 +17,6 @@ use crate::domain::profit::{self, ProfitLine, ProfitReport};
 pub struct CartItem {
     pub component_id: Uuid,
     pub quantity: u32,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Cart {
-    pub items: Vec<CartItem>,
-}
-
-impl Cart {
-    pub fn set_quantity(&mut self, component_id: Uuid, quantity: u32) {
-        self.items.retain(|i| i.component_id != component_id);
-        if quantity > 0 {
-            self.items.push(CartItem {
-                component_id,
-                quantity,
-            });
-        }
-    }
-
-    pub fn quantity_of(&self, component_id: Uuid) -> u32 {
-        self.items
-            .iter()
-            .find(|i| i.component_id == component_id)
-            .map(|i| i.quantity)
-            .unwrap_or(0)
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-}
-
-/// Disponibilidad para vender (flujo individual) de un producto:
-/// totales entre proveedores, ya calculados por la base.
-pub fn sellable_stock(c: &Component) -> u32 {
-    c.stock_individual_total
 }
 
 /// Calcula el reporte de ganancia del carrito. Los componentes faltantes
@@ -110,18 +76,14 @@ mod tests {
             cd_only_best: false,
             offers: vec![],
             specs: Specs::default(),
+            overrides: Default::default(),
+            list_kind: ComponentKind::Ram,
+            list_specs: Specs::default(),
         }
     }
 
     fn rate() -> ExchangeRate {
         ExchangeRate::new(dec!(18.52))
-    }
-
-    #[test]
-    fn sellable_stock_only_counts_cen_ave2_cedis() {
-        let p = product("X", 5, 3, 7, 99, 99);
-        assert_eq!(sellable_stock(&p), 15, "CMAL y GDL no cuentan");
-        assert_eq!(p.stock_individual_total, 15);
     }
 
     #[test]
@@ -131,9 +93,8 @@ mod tests {
         catalog.insert(ram.id, ram.clone());
         let lookup = |id: &Uuid| catalog.get(id).cloned();
 
-        let mut cart = Cart::default();
-        cart.set_quantity(ram.id, 2);
-        let mut report = compute_cart_profit(&cart.items, &lookup, &rate(), dec!(20));
+        let items = vec![CartItem { component_id: ram.id, quantity: 2 }];
+        let mut report = compute_cart_profit(&items, &lookup, &rate(), dec!(20));
         // costo 100×2 = 200; ganancia 20% = 40; IVA = 240×16% = 38.40
         assert_eq!(report.lines.len(), 1);
         assert_eq!(report.totals.cost, dec!(200.00));
@@ -148,15 +109,5 @@ mod tests {
             report.totals.cost + report.totals.final_profit + report.totals.iva,
             report.totals.price
         );
-    }
-
-    #[test]
-    fn cart_quantity_zero_removes_item() {
-        let mut cart = Cart::default();
-        let id = Uuid::new_v4();
-        cart.set_quantity(id, 3);
-        assert_eq!(cart.quantity_of(id), 3);
-        cart.set_quantity(id, 0);
-        assert!(cart.is_empty());
     }
 }

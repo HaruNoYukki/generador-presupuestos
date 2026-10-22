@@ -6,6 +6,8 @@
 //! - `domain`: componentes, dinero (regla del T.C), ensamble con validación
 //!   de compatibilidad, costo, ganancias, carrito y notas de venta.
 //! - `suppliers`: importación de listas de precios en Excel por proveedor.
+//! - `cva_feed`: consultas al servicio XML de CVA (esqueleto, detalles
+//!   del servicio por definir).
 //! - `catalog`: catálogo en memoria (mejor oferta por SKU).
 //! - `store`: estado de la aplicación y persistencia.
 //! - `commands`: frontera de comandos hacia la GUI.
@@ -19,6 +21,7 @@
 mod ai;
 mod catalog;
 mod commands;
+mod cva_feed;
 mod db;
 mod domain;
 mod store;
@@ -60,6 +63,11 @@ pub fn run() {
             commands::get_component,
             commands::add_manual_component,
             commands::remove_manual_component,
+            commands::update_component,
+            commands::clear_offer_override,
+            commands::get_cva_feed_config,
+            commands::set_cva_feed_config,
+            commands::cva_feed_query,
             commands::get_rate,
             commands::set_rate,
             commands::create_assembly,

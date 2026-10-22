@@ -63,6 +63,30 @@ fn default_condition() -> Condition {
     Condition::Usado
 }
 
+/// Edición de un componente existente desde el catálogo. El maestro
+/// (descripción, marca, tipo, condición, specs) se edita siempre; precio y
+/// existencia solo cuando el componente tiene una oferta `manual` o `pch`
+/// (las de lista se actualizan únicamente con el Excel del proveedor).
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateComponentInput {
+    pub description: String,
+    #[serde(default)]
+    pub brand: Option<String>,
+    pub kind: ComponentKind,
+    pub condition: Condition,
+    #[serde(default)]
+    pub specs: Specs,
+    /// Oferta a editar ('manual' | 'pch'); `None` = no tocar precio/existencia.
+    #[serde(default)]
+    pub supplier: Option<String>,
+    #[serde(default)]
+    pub price_amount: Option<String>,
+    #[serde(default)]
+    pub price_currency: Option<Currency>,
+    #[serde(default)]
+    pub stock: Option<u32>,
+}
+
 /// Catálogo completo: componentes de la lista + manuales, con índice por id.
 #[derive(Debug, Serialize)]
 pub struct Catalog {
@@ -137,16 +161,6 @@ impl Catalog {
             .collect();
     }
 
-    /// Reemplaza el conjunto de componentes manuales por los dados
-    /// (los de la lista de precios permanecen intactos).
-    pub fn merge_manual(&mut self, manual: Vec<Component>) {
-        self.components.retain(|c| c.source != ComponentSource::Manual);
-        self.components.extend(manual);
-        self.components
-            .sort_by(|a, b| a.kind.label().cmp(b.kind.label()).then(a.description.cmp(&b.description)));
-        self.reindex();
-    }
-
     /// Da de alta un componente manual y lo devuelve.
     pub fn add_manual(&mut self, input: NewComponentInput) -> Result<Component, CatalogError> {
         if input.description.trim().is_empty() {
@@ -171,12 +185,15 @@ impl Catalog {
             on_promotion: false,
             offer_stocks: BTreeMap::new(),
             source: ComponentSource::Manual,
-            specs: input.specs,
+            specs: input.specs.clone(),
             supplier: String::new(),
             stock_ensamble_total: 0,
             stock_individual_total: 0,
             cd_only_best: false,
             offers: Vec::new(),
+            overrides: Default::default(),
+            list_kind: input.kind,
+            list_specs: input.specs,
         };
         self.components.push(component.clone());
         self.reindex();
@@ -192,15 +209,6 @@ impl Catalog {
             self.reindex();
         }
         removed
-    }
-
-    /// Componentes manuales (para persistencia).
-    pub fn manual_components(&self) -> Vec<Component> {
-        self.components
-            .iter()
-            .filter(|c| c.source == ComponentSource::Manual)
-            .cloned()
-            .collect()
     }
 
     /// Búsqueda por texto libre (SKU, descripción y marca) y opcionalmente
@@ -345,34 +353,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_manual_roundtrip() {
-        let mut cat = Catalog::from_seed_json(MINIMAL_SEED).unwrap();
-        let c = cat
-            .add_manual(NewComponentInput {
-                description: "Fuente usada".into(),
-                sku: None,
-                brand: None,
-                kind: ComponentKind::Psu,
-                price_amount: "500".into(),
-                price_currency: Currency::Mxp,
-                condition: Condition::Usado,
-                specs: Specs::default(),
-                supplier: None,
-                stock: None,
-            })
-            .unwrap();
-        let manual = cat.manual_components();
-        assert_eq!(manual.len(), 1);
-
-        // Recargar: semilla + merge de manuales
-        let mut reloaded = Catalog::from_seed_json(MINIMAL_SEED).unwrap();
-        assert_eq!(reloaded.components.len(), 2);
-        reloaded.merge_manual(manual);
-        assert_eq!(reloaded.components.len(), 3);
-        assert!(reloaded.get_component(&c.id).is_some());
-    }
-
-    #[test]
     fn counts_by_kind_uses_snake_keys() {
         let cat = Catalog::from_seed_json(MINIMAL_SEED).unwrap();
         let counts = cat.counts_by_kind();
@@ -381,11 +361,18 @@ mod tests {
     }
 
     /// La semilla real (data/catalog_seed.json, generada por el script de
-    /// Python) debe deserializar sin errores y cumplir lo esperado.
+    /// Python) debe deserializar sin errores y cumplir lo esperado. El
+    /// archivo está gitignored (contiene precios): si no existe en esta
+    /// máquina, el test se omite en vez de romper la compilación.
     #[test]
     fn real_embedded_seed_loads() {
-        let json = include_str!("../../../data/catalog_seed.json");
-        let cat = Catalog::from_seed_json(json).expect("la semilla real debe cargar");
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../data/catalog_seed.json");
+        let Ok(json) = std::fs::read_to_string(&path) else {
+            eprintln!("data/catalog_seed.json no presente (gitignored): test omitido");
+            return;
+        };
+        let cat = Catalog::from_seed_json(&json).expect("la semilla real debe cargar");
         assert!(cat.components.len() >= 600, "componentes: {}", cat.components.len());
         assert_eq!(cat.exchange_rate.rate, dec!(18.52));
         assert_eq!(cat.exchange_rate.effective(), dec!(19));

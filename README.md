@@ -34,7 +34,9 @@ el suyo desde el Excel de su proveedor. Dos caminos:
 
 Para actualizar precios después, simplemente importa la lista nueva: los
 productos existentes se actualizan (conservando su identidad) y los nuevos
-se agregan. No hace falta recompilar.
+se agregan. No hace falta recompilar. Al terminar, la app muestra un
+**informe de existencias** con los componentes que quedaron agotados y
+están vigentes en un preensamble o personalizado.
 
 ### Opción B — Semilla JSON (avanzada)
 
@@ -67,6 +69,13 @@ acentos y mayúsculas) y la clasificación de tipos son compartidos.
 Para agregar un proveedor nuevo: implementa `SupplierAdapter` con su
 `detect()` y agrégalo a `adapters()` (específicos antes que genéricos).
 
+### Consultas CVA (XML) — en preparación
+
+`src-tauri/src/cva_feed.rs` deja lista la estructura para consultar precio
+y existencia directamente al servicio XML de CVA (endpoint y clave de
+cliente ya se guardan desde **Ajustes → Consultas CVA**). La llamada y el
+parseo se implementarán cuando se definan los detalles del servicio.
+
 ### Catálogos de atributos (Ajustes)
 
 Marca, Socket, DDR, Factor de forma y Formato de memoria RAM son
@@ -89,6 +98,32 @@ nuevo que traigan.
   - Venta individual: arroba → igual; CVA → **Disp + Disp CD**.
 - Los artículos **solo-CD** (CVA) van bloqueados en el picker de ensambles
   con la marca "SOLO CD · no ensamble".
+- **Sin existencia no se ensambla**: el picker bloquea los agotados
+  ("SIN EXISTENCIA"), el botón `+` de cantidad no pasa del disponible y un
+  renglón que pide más de lo que hay es **error de validación**
+  (`out_of_stock`) — el ensamble no se puede confirmar ni vender hasta
+  corregirlo. Reducir o quitar siempre se permite.
+- **SKU ausente del Excel**: si un SKU que estaba en la lista de arroba o
+  CVA ya no viene en la lista nueva, se interpreta como **agotado** — su
+  oferta conserva el último precio conocido pero su existencia queda en 0
+  (la genérica puede ser parcial y no barre).
+- **Edición del catálogo**: botón ✎ por renglón. El maestro (descripción,
+  marca, tipo, condición, specs) se edita siempre. Precio y existencia se
+  corrigen por oferta: manual/PCH se escriben directo; en ofertas de lista
+  (arroba/cva) quedan como **corrección protegida del import** — útil
+  cuando el Excel trae datos incompletos (p. ej. CVA). Con varias ofertas
+  se elige cuál editar; "↺ usar lista" revierte al valor importado. Solo
+  se protege lo que difiere del valor vigente: si se guarda igual a la
+  lista, la próxima importación vuelve a mandar.
+- **Correcciones protegidas del import**: al editar el tipo o las specs de
+  un SKU de lista (p. ej. marcar que un gabinete sí/no incluye fuente), el
+  cambio vive en `overrides` y **ningún import lo pisa**. Solo se protegen
+  las claves que difieren de la lista (🔒); el botón "usar lista" regresa
+  al valor original y desprotege la clave.
+- **Informe post-import**: al importar un Excel se listan los componentes
+  sin existencia suficiente en ensambles vigentes, marcando los que se
+  acaban de agotar y en qué cotizaciones (preensamble/personalizado) se
+  usan.
 - **Captura PCH sobre un SKU existente**: registra/actualiza únicamente la
   oferta PCH (precio y existencia) sin tocar el maestro — el alta manual
   genérica sobre un SKU existente se rechaza.
@@ -115,7 +150,8 @@ nuevo que traigan.
 - **Validación de ensamble**: mínimos por slot, compatibilidad de socket
   CPU↔MOBO, DDR RAM↔MOBO y factor de forma gabinete↔MOBO (si faltan datos
   del gabinete se marca advertencia para revisión manual). SODIMM
-  excluida de ensambles.
+  excluida de ensambles. Renglones con más cantidad que la existencia
+  disponible: error `out_of_stock` (bloquea confirmar y nota de venta).
 - **Cotizaciones**: número DDMMAA-NC consecutivo por día; tipos
   **preensamble** (caduca el día 1 del mes siguiente; si se genera el
   último día del mes, 15 días naturales) y **personalizado** (15 días
@@ -132,7 +168,8 @@ nuevo que traigan.
 
 ```
 src-tauri/src/
-├── db.rs           SQLite (v6): maestro + ofertas + existencias (3FN/BCNF)
+├── db.rs           SQLite (v8): maestro + ofertas + existencias (3FN/BCNF)
+│                   y overrides manuales protegidos del import
 ├── domain/         Dominio puro: componente, dinero, ensamble, costo,
 │                   ganancias, carrito, notas de venta
 ├── suppliers.rs    Importación de Excel por proveedor (calamine)

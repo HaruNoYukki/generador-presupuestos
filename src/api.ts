@@ -8,9 +8,11 @@ import type {
   CatalogOverview,
   ComponentDto,
   CostBreakdown,
+  CvaFeedConfig,
   ProfitReport,
   RateInfo,
   ValidationReport,
+  XlsxImportSummary,
 } from './types';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -32,8 +34,23 @@ export interface NewManualComponent {
   specs: Record<string, unknown>;
   /** Proveedor de la captura manual: 'pch' | 'manual'. */
   supplier?: string;
-  /** Existencia capturada a mano (PCH). */
+  /** Existencia capturada a mano (PCH / manual). */
   stock?: number;
+}
+
+/** Edición de un componente existente. Precio/existencia aplican a la
+ *  oferta indicada en `supplier`: manual/pch se escriben directo; las de
+ *  lista (arroba/cva) quedan como corrección protegida del import. */
+export interface UpdateComponentInput {
+  description: string;
+  brand?: string | null;
+  kind: string;
+  condition: 'nuevo' | 'usado';
+  specs: Record<string, unknown>;
+  supplier?: string | null;
+  price_amount?: string | null;
+  price_currency?: 'USD' | 'MXP' | null;
+  stock?: number | null;
 }
 
 export const api = {
@@ -61,6 +78,19 @@ export const api = {
 
   addManualComponent: (input: NewManualComponent) =>
     call<ComponentDto>('add_manual_component', { input }),
+
+  updateComponent: (id: string, input: UpdateComponentInput) =>
+    call<ComponentDto>('update_component', { id, input }),
+
+  /** Quita la corrección manual de una oferta de lista ("usar lista"). */
+  clearOfferOverride: (id: string, supplier: string) =>
+    call<ComponentDto>('clear_offer_override', { id, supplier }),
+
+  getCvaFeedConfig: () =>
+    call<CvaFeedConfig | null>('get_cva_feed_config'),
+
+  setCvaFeedConfig: (config: CvaFeedConfig) =>
+    call<void>('set_cva_feed_config', { config }),
 
   removeManualComponent: (id: string) =>
     call<boolean>('remove_manual_component', { id }),
@@ -128,12 +158,11 @@ export const api = {
   importCatalog: (path: string) =>
     call<{ updated: number; inserted: number; total: number }>('import_catalog', { path }),
 
-  /** Importa un Excel de lista de precios (cualquier proveedor registrado). */
+  /** Importa un Excel de lista de precios (cualquier proveedor registrado).
+   *  Devuelve también el informe de componentes de ensambles vigentes que
+   *  quedaron sin existencia suficiente. */
   importCatalogXlsx: (path: string) =>
-    call<{ updated: number; inserted: number; total: number; supplier: string }>(
-      'import_catalog_xlsx',
-      { path },
-    ),
+    call<XlsxImportSummary>('import_catalog_xlsx', { path }),
 
   getComponentBySku: (sku: string) =>
     call<ComponentDto | null>('get_component_by_sku', { sku }),

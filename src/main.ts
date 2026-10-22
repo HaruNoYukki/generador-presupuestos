@@ -113,13 +113,14 @@ function renderShell() {
       }),
     );
   } else if (state.tab === 'catalogo') {
-    content.append(
-      createCatalogView(state.components, async (components) => {
-        state.components = components;
-      }),
-    );
+    content.append(createCatalogView(state.components, refreshComponents));
   } else {
-    content.append(createSettingsView(refreshOverview));
+    // Tras importar una lista cambian precios y existencias: se recarga la
+    // lista compartida (in-place) para que ensambles y picker la vean.
+    content.append(createSettingsView(async () => {
+      await refreshComponents();
+      await refreshOverview();
+    }));
   }
 
   root.replaceChildren(header, content);

@@ -74,6 +74,20 @@ export interface Offer {
   stock_ensamble: number;
   stock_individual: number;
   cd_only: boolean;
+  /** Precio corregido a mano (protegido del import). */
+  price_overridden: boolean;
+  /** Existencia corregida a mano (misma protección). */
+  stock_overridden: boolean;
+  /** Precio/existencia de la lista, presentes solo con override activo. */
+  list_price: Money | null;
+  list_stock: number | null;
+}
+
+/** Correcciones manuales protegidas de la importación de listas. */
+export interface Overrides {
+  kind?: Kind | null;
+  /** Claves de `Specs` corregidas a mano (valor tal como se serializa). */
+  specs?: Partial<Record<keyof Specs, unknown>>;
 }
 
 export interface Component {
@@ -103,10 +117,53 @@ export interface Component {
   cd_only_best: boolean;
   /** Desglose de inventario por proveedor. */
   offers: Offer[];
+  /** Correcciones manuales (ya aplicadas en `kind` y `specs`). */
+  overrides: Overrides;
+  /** Tipo y specs tal como los trajo la lista, sin correcciones. */
+  list_kind: Kind;
+  list_specs: Specs;
 }
 
 export interface ComponentDto extends Component {
   price_mxp: Money;
+}
+
+/** Componente de un ensamble vigente afectado por una importación. */
+export interface AffectedAssembly {
+  id: string;
+  name: string;
+  quote_type: QuoteType;
+  quote_number: string | null;
+  quantity: number;
+}
+
+export interface OutOfStockHit {
+  component_id: string;
+  sku: string;
+  description: string;
+  kind: Kind;
+  supplier: string | null;
+  stock_after: number;
+  /** Antes de importar sí alcanzaba: se acaba de agotar. */
+  newly_out: boolean;
+  assemblies: AffectedAssembly[];
+}
+
+export interface XlsxImportSummary {
+  updated: number;
+  inserted: number;
+  /** SKUs del proveedor que ya no venían y quedaron agotados. */
+  zeroed: number;
+  total: number;
+  supplier: string;
+  out_of_stock: OutOfStockHit[];
+}
+
+/** Configuración del servicio XML de CVA (consultas, en preparación). */
+export interface CvaFeedConfig {
+  endpoint: string;
+  client_key: string;
+  configured?: boolean;
 }
 
 export interface ExchangeRate {

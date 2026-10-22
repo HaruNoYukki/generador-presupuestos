@@ -1,4 +1,4 @@
-# Esquema de la base de datos (SQLite) — versión 6
+# Esquema de la base de datos (SQLite) — versión 8
 
 ```mermaid
 erDiagram
@@ -12,7 +12,8 @@ erDiagram
         TEXT kind "cpu | motherboard | ram | storage | psu | case | cooler_air | cooler_liquid | gpu | monitor | keyboard | mouse | keyboard_mouse_kit | expansion_card | other"
         TEXT condition "nuevo | usado"
         TEXT specs "JSON (diseno acordado): socket, ddr, form_factor, wattage, includes_psu, includes_cooler, ram_form, capacity..."
-        TEXT title_source "raw | ai (normalizacion de titulos con IA)"
+        TEXT overrides "JSON (v8): correcciones manuales de kind/specs protegidas del import"
+        TEXT title_source "raw | ai | manual (editado a mano: la IA no lo toca)"
         TEXT updated_at
     }
 
@@ -27,7 +28,7 @@ erDiagram
     }
 
     SUPPLIERS {
-        TEXT id PK "arroba | cva | manual"
+        TEXT id PK "arroba | cva | generico | pch | manual"
         TEXT name
     }
 

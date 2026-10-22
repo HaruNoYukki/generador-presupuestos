@@ -1,9 +1,11 @@
-//! Persistencia SQLite — esquema v5/v6, normalizado a 3FN/BCNF.
+//! Persistencia SQLite — esquema v5..v8, normalizado a 3FN/BCNF.
 //!
 //! - `suppliers`, `brands`, `departments`, `warehouses`: catálogos.
 //! - `products`: maestro del SKU (datos intrínsecos; marca y departamento
 //!   por FK; `specs` queda en JSON por decisión de diseño acordada;
-//!   `title_source` marca si el título ya pasó por la IA: 'raw' | 'ai').
+//!   `title_source` marca si el título ya pasó por la IA: 'raw' | 'ai';
+//!   `overrides` (v8) guarda correcciones manuales de `kind`/`specs` que
+//!   la importación de listas nunca pisa).
 //! - `product_offers` + `offer_stock`: precio y existencias por
 //!   (sku, proveedor, almacén). Varios proveedores pueden ofrecer el mismo
 //!   SKU con precios y cantidades distintos.
@@ -13,14 +15,14 @@
 //!   congelado de descripción y precio, correcto contablemente).
 //! - `counters`, `settings`: triviales.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 use rusqlite::{params, Connection};
 
 use crate::domain::assembly::{Assembly, AssemblyItem, Slot};
 use crate::domain::component::{
-    Component, ComponentKind, ComponentSource, Condition, Offer, Specs,
+    Component, ComponentKind, ComponentSource, Condition, Offer, Overrides, Specs,
 };
 use crate::domain::money::{Currency, Money};
 use crate::domain::sale::SaleNoteRecord;
@@ -123,7 +125,63 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if version < 7 {
         migrate_v7_spec_options(conn)?;
     }
-    conn.pragma_update(None, "user_version", 7)?;
+    if version < 8 {
+        migrate_v8_overrides(conn)?;
+    }
+    if version < 9 {
+        migrate_v9_offer_overrides(conn)?;
+    }
+    conn.pragma_update(None, "user_version", 9)?;
+    Ok(())
+}
+
+/// v9: correcciones manuales de precio/existencia por OFERTA (p. ej. CVA,
+/// cuyo Excel trae datos incompletos). La importación de listas nunca toca
+/// esta tabla; `load_products` la aplica encima de lo importado.
+fn migrate_v9_offer_overrides(conn: &Connection) -> rusqlite::Result<()> {
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='offer_overrides'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has == 0 {
+        conn.execute_batch(
+            "CREATE TABLE offer_overrides (
+                 sku            TEXT NOT NULL,
+                 supplier       TEXT NOT NULL,
+                 price_amount   TEXT,
+                 price_currency TEXT,
+                 stock          INTEGER,
+                 updated_at     TEXT,
+                 PRIMARY KEY (sku, supplier),
+                 FOREIGN KEY (sku, supplier)
+                     REFERENCES product_offers(sku, supplier) ON DELETE CASCADE
+             );",
+        )?;
+    }
+    Ok(())
+}
+
+/// v8: correcciones manuales del maestro (`kind` y claves de `specs`,
+/// p. ej. "este gabinete sí incluye fuente") en una columna JSON que la
+/// importación de listas nunca toca. `load_products` las aplica encima de
+/// lo que trajo la lista.
+fn migrate_v8_overrides(conn: &Connection) -> rusqlite::Result<()> {
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('products') WHERE name = 'overrides'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has == 0 {
+        conn.execute(
+            "ALTER TABLE products ADD COLUMN overrides TEXT NOT NULL DEFAULT '{}'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -689,6 +747,7 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
         kind: ComponentKind,
         condition: Condition,
         specs: Specs,
+        overrides: Overrides,
     }
     struct OfferRow {
         supplier: String,
@@ -699,15 +758,63 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
         stock_ensamble: u32,
         stock_individual: u32,
         cd_only: bool,
+        price_overridden: bool,
+        stock_overridden: bool,
+        list_price: Option<Money>,
+        list_stock: Option<u32>,
+        /// Etiqueta fija cuando un override de existencia la reemplaza.
+        stock_label_override: Option<String>,
     }
 
     let mut masters: BTreeMap<String, MasterRow> = BTreeMap::new();
     let mut offers_by_sku: BTreeMap<String, Vec<OfferRow>> = BTreeMap::new();
 
+    // Correcciones manuales de ofertas (v9): precio/existencia que la
+    // importación no debe pisar. Se cargan de una vez y se aplican después
+    // de las reglas por proveedor, ANTES de elegir la mejor oferta.
+    struct OfferOverride {
+        price: Option<Money>,
+        stock: Option<u32>,
+    }
+    let mut offer_overrides: BTreeMap<(String, String), OfferOverride> = BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT sku, supplier, price_amount, price_currency, stock FROM offer_overrides",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let sku: String = row.get("sku")?;
+            let supplier: String = row.get("supplier")?;
+            let price = match row.get::<_, Option<String>>("price_amount")? {
+                Some(amount) => {
+                    let currency: Option<String> = row.get("price_currency")?;
+                    let currency = currency
+                        .and_then(|c| {
+                            serde_json::from_value(serde_json::Value::String(c)).ok()
+                        })
+                        .unwrap_or(Currency::Mxp);
+                    rust_decimal::Decimal::from_str_exact(&amount)
+                        .ok()
+                        .map(|amount| Money::new(amount, currency))
+                }
+                None => None,
+            };
+            let stock: Option<u32> = row
+                .get::<_, Option<i64>>("stock")?
+                .and_then(|s| u32::try_from(s.max(0)).ok());
+            offer_overrides.insert(
+                (sku, supplier),
+                OfferOverride { price, stock },
+            );
+            Ok(())
+        })?;
+        rows.collect::<rusqlite::Result<()>>()?;
+        drop(stmt);
+    }
+
     let mut stmt = conn.prepare(
         "SELECT p.id, p.sku, p.barcode, p.description,
                 b.name AS brand_name, d.name AS department_name,
-                p.kind, p.condition, p.specs
+                p.kind, p.condition, p.specs, p.overrides
          FROM products p
          JOIN brands b ON b.id = p.brand_id
          JOIN departments d ON d.id = p.department_id
@@ -718,6 +825,7 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
         let kind_s: String = row.get("kind")?;
         let condition_s: String = row.get("condition")?;
         let specs_s: String = row.get("specs")?;
+        let overrides_s: String = row.get("overrides")?;
         masters.insert(
             sku,
             MasterRow {
@@ -731,6 +839,7 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
                 condition: serde_json::from_value(serde_json::Value::String(condition_s))
                     .unwrap_or(Condition::Nuevo),
                 specs: serde_json::from_str(&specs_s).unwrap_or_default(),
+                overrides: serde_json::from_str(&overrides_s).unwrap_or_default(),
             },
         );
         Ok(())
@@ -770,6 +879,11 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
                 stock_ensamble: 0,
                 stock_individual: 0,
                 cd_only: row.get::<_, i64>("cd_only")? != 0,
+                price_overridden: false,
+                stock_overridden: false,
+                list_price: None,
+                list_stock: None,
+                stock_label_override: None,
             });
         }
         let warehouse: Option<String> = row.get("name")?;
@@ -803,17 +917,46 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
                     o.stock_ensamble = s;
                     o.stock_individual = s;
                 }
-                // PCH: existencia capturada a mano (almacén 'pch_existencia').
-                // No se valida por sistema: al usarla en fabricación se pide
-                // verificar existencia manualmente.
-                "pch" => {
-                    let s = o.stocks.get("pch_existencia").copied().unwrap_or(0);
+                // PCH / manual: existencia capturada a mano (almacén
+                // '<proveedor>_existencia'). No se valida por sistema: al
+                // usarla en fabricación se pide verificar existencia
+                // manualmente.
+                "pch" | "manual" => {
+                    let key = format!("{}_existencia", o.supplier);
+                    let s = o.stocks.get(&key).copied().unwrap_or(0);
                     o.stock_ensamble = s;
                     o.stock_individual = s;
                 }
                 _ => {
                     o.stock_ensamble = 0;
                     o.stock_individual = 0;
+                }
+            }
+            // Corrección manual (v9): gana sobre lo importado. Los valores
+            // de lista se conservan en la oferta para poder revertir.
+            if let Some(ov) = offer_overrides.get(&(sku.clone(), o.supplier.clone())) {
+                let list_price = o.price.clone();
+                let list_stock = o.stock_ensamble;
+                if let Some(price) = &ov.price {
+                    o.price = price.clone();
+                }
+                if let Some(st) = ov.stock {
+                    o.stock_ensamble = st;
+                    o.stock_individual = st;
+                    if st > 0 {
+                        // El usuario afirmó existencia real: deja de ser
+                        // "solo CD" para efectos de ensambles.
+                        o.cd_only = false;
+                    }
+                    o.stock_label_override = Some(format!("Editado a mano: {st}"));
+                }
+                o.price_overridden = ov.price.is_some();
+                o.stock_overridden = ov.stock.is_some();
+                if o.price_overridden {
+                    o.list_price = Some(list_price);
+                }
+                if o.stock_overridden {
+                    o.list_stock = Some(list_stock);
                 }
             }
         }
@@ -841,6 +984,8 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
             ),
         };
 
+        let effective_kind = master.overrides.kind.unwrap_or(master.kind);
+        let effective_specs = master.overrides.apply_specs(&master.specs);
         out.push(Component {
             id: master.id,
             sku,
@@ -848,7 +993,7 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
             description: master.description,
             brand: master.brand,
             department: master.department,
-            kind: master.kind,
+            kind: effective_kind,
             condition: master.condition,
             price,
             on_promotion,
@@ -858,7 +1003,7 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
             } else {
                 ComponentSource::Lista
             },
-            specs: master.specs,
+            specs: effective_specs,
             supplier,
             stock_ensamble_total: offers.iter().map(|o| o.stock_ensamble).sum(),
             stock_individual_total: offers.iter().map(|o| o.stock_individual).sum(),
@@ -869,13 +1014,23 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
                     supplier: o.supplier.clone(),
                     price: o.price.clone(),
                     on_promotion: o.on_promotion,
-                    stock_label: stock_label(&o.supplier, &o.stocks),
+                    stock_label: o
+                        .stock_label_override
+                        .clone()
+                        .unwrap_or_else(|| stock_label(&o.supplier, &o.stocks)),
                     stocks: o.stocks.clone(),
                     stock_ensamble: o.stock_ensamble,
                     stock_individual: o.stock_individual,
                     cd_only: o.cd_only,
+                    price_overridden: o.price_overridden,
+                    stock_overridden: o.stock_overridden,
+                    list_price: o.list_price.clone(),
+                    list_stock: o.list_stock,
                 })
                 .collect(),
+            overrides: master.overrides,
+            list_kind: master.kind,
+            list_specs: master.specs,
         });
     }
     Ok(out)
@@ -895,12 +1050,208 @@ fn stock_label(supplier: &str, stocks: &BTreeMap<String, u32>) -> String {
             stocks.get("ave_2").copied().unwrap_or(0),
             stocks.get("cedis").copied().unwrap_or(0)
         ),
-        "pch" => format!(
+        "pch" | "manual" => format!(
             "Existencia {}",
-            stocks.get("pch_existencia").copied().unwrap_or(0)
+            stocks
+                .get(&format!("{supplier}_existencia"))
+                .copied()
+                .unwrap_or(0)
         ),
         _ => String::new(),
     }
+}
+
+/// Corrección manual de precio/existencia de UNA oferta de lista (v9).
+/// Solo se guardan las partes que cambiaron (`None` conserva lo previo vía
+/// COALESCE); la importación de listas nunca toca esta tabla y
+/// `load_products` aplica el override encima de lo importado.
+pub fn set_offer_override(
+    conn: &Connection,
+    sku: &str,
+    supplier: &str,
+    price: Option<&Money>,
+    stock: Option<u32>,
+) -> rusqlite::Result<()> {
+    let (amount, currency) = match price {
+        Some(m) => (
+            Some(m.amount.to_string()),
+            serde_json::to_value(m.currency)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string)),
+        ),
+        None => (None, None),
+    };
+    conn.execute(
+        "INSERT INTO offer_overrides (sku, supplier, price_amount, price_currency, stock, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+         ON CONFLICT(sku, supplier) DO UPDATE SET
+            price_amount   = COALESCE(excluded.price_amount, offer_overrides.price_amount),
+            price_currency = COALESCE(excluded.price_currency, offer_overrides.price_currency),
+            stock          = COALESCE(excluded.stock, offer_overrides.stock),
+            updated_at     = datetime('now')",
+        params![sku, supplier, amount, currency, stock.map(|s| s as i64)],
+    )?;
+    Ok(())
+}
+
+/// Quita la corrección manual de una oferta: vuelve a mandar el valor de
+/// la lista (el que traiga la última importación).
+pub fn clear_offer_override(conn: &Connection, sku: &str, supplier: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM offer_overrides WHERE sku = ?1 AND supplier = ?2",
+        params![sku, supplier],
+    )?;
+    Ok(())
+}
+
+/// Edición manual del maestro desde el catálogo. Descripción, marca y
+/// condición se escriben directo. Para `kind` y `specs`:
+/// - si el SKU tiene oferta de lista (`has_list_offer`), `products.kind` y
+///   `products.specs` quedan intactos y solo se guardan en `overrides` las
+///   claves que difieren de lo que trajo la lista, así la próxima
+///   importación sigue actualizando lo que NO se corrigió a mano;
+/// - si es captura manual/PCH pura, se escriben directo y los overrides se
+///   limpian (no hay import del que protegerse).
+/// Un título editado a mano se marca `title_source='manual'` para que la IA
+/// no lo vuelva a tocar.
+#[allow(clippy::too_many_arguments)]
+pub fn update_master_manual(
+    conn: &Connection,
+    id: &str,
+    description: &str,
+    brand: &str,
+    condition: Condition,
+    kind: ComponentKind,
+    specs: &Specs,
+    has_list_offer: bool,
+) -> rusqlite::Result<()> {
+    let brand_id = catalog_id(conn, "brands", brand)?;
+    register_spec_values(conn, specs);
+    let enum_str = |v: serde_json::Result<serde_json::Value>| {
+        v.ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    };
+    let condition_s = enum_str(serde_json::to_value(condition));
+    let kind_s = enum_str(serde_json::to_value(kind));
+
+    if has_list_offer {
+        let (list_kind_s, list_specs_s): (Option<String>, String) = conn.query_row(
+            "SELECT kind, specs FROM products WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let list_kind = list_kind_s
+            .as_deref()
+            .and_then(ComponentKind::parse)
+            .unwrap_or(ComponentKind::Other);
+        let list_specs: Specs = serde_json::from_str(&list_specs_s).unwrap_or_default();
+        let overrides = Overrides {
+            kind: (kind != list_kind).then_some(kind),
+            specs: Overrides::diff_specs(&list_specs, specs),
+        };
+        let overrides_s = serde_json::to_string(&overrides).unwrap_or_else(|_| "{}".into());
+        conn.execute(
+            "UPDATE products SET
+                description  = ?2,
+                brand_id     = ?3,
+                condition    = ?4,
+                overrides    = ?5,
+                title_source = CASE WHEN description != ?2 THEN 'manual' ELSE title_source END,
+                updated_at   = datetime('now')
+             WHERE id = ?1",
+            params![id, description, brand_id, condition_s, overrides_s],
+        )?;
+    } else {
+        let specs_s = serde_json::to_string(specs).unwrap_or_else(|_| "{}".into());
+        conn.execute(
+            "UPDATE products SET
+                description  = ?2,
+                brand_id     = ?3,
+                condition    = ?4,
+                kind         = ?5,
+                specs        = ?6,
+                overrides    = '{}',
+                title_source = CASE WHEN description != ?2 THEN 'manual' ELSE title_source END,
+                updated_at   = datetime('now')
+             WHERE id = ?1",
+            params![id, description, brand_id, condition_s, kind_s, specs_s],
+        )?;
+    }
+    Ok(())
+}
+
+/// Precio y existencia de una oferta capturada a mano ('manual' | 'pch').
+/// La existencia vive en el almacén '<proveedor>_existencia'.
+pub fn update_offer_manual(
+    conn: &Connection,
+    sku: &str,
+    supplier: &str,
+    price: &Money,
+    stock: u32,
+) -> rusqlite::Result<()> {
+    let currency = serde_json::to_value(price.currency)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    conn.execute(
+        "INSERT INTO product_offers (sku, supplier, price_amount, price_currency,
+            on_promotion, cd_only, updated_at)
+         VALUES (?1,?2,?3,?4,0,0, datetime('now'))
+         ON CONFLICT(sku, supplier) DO UPDATE SET
+            price_amount   = excluded.price_amount,
+            price_currency = excluded.price_currency,
+            updated_at     = datetime('now')",
+        params![sku, supplier, price.amount.to_string(), currency],
+    )?;
+    conn.execute(
+        "DELETE FROM offer_stock WHERE sku = ?1 AND supplier = ?2",
+        params![sku, supplier],
+    )?;
+    if stock > 0 {
+        let wid = catalog_id(conn, "warehouses", &format!("{supplier}_existencia"))?;
+        conn.execute(
+            "INSERT INTO offer_stock (sku, supplier, warehouse_id, quantity)
+             VALUES (?1,?2,?3,?4)",
+            params![sku, supplier, wid, stock as i64],
+        )?;
+    }
+    Ok(())
+}
+
+/// Un SKU que YA no viene en la lista nueva de un proveedor se interpreta
+/// como agotado en ese proveedor: se borra su existencia pero se conserva
+/// la oferta (último precio conocido) y las ofertas de otros proveedores.
+/// Devuelve cuántos SKUs quedaron agotados.
+pub fn zero_absent_offer_stock(
+    conn: &Connection,
+    supplier: &str,
+    present_skus: &std::collections::HashSet<String>,
+) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT sku FROM offer_stock WHERE supplier = ?1",
+    )?;
+    let stocked: Vec<String> = stmt
+        .query_map(params![supplier], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    let mut zeroed = 0usize;
+    for sku in stocked {
+        if present_skus.contains(&sku) {
+            continue;
+        }
+        conn.execute(
+            "DELETE FROM offer_stock WHERE sku = ?1 AND supplier = ?2",
+            params![sku, supplier],
+        )?;
+        conn.execute(
+            "UPDATE product_offers SET updated_at = datetime('now')
+             WHERE sku = ?1 AND supplier = ?2",
+            params![sku, supplier],
+        )?;
+        zeroed += 1;
+    }
+    Ok(zeroed)
 }
 
 /// Consulta principal por SKU (único).
@@ -1262,6 +1613,9 @@ mod tests {
             stock_individual_total: 0,
             cd_only_best: false,
             offers: vec![],
+            overrides: Default::default(),
+            list_kind: ComponentKind::Psu,
+            list_specs: Specs { wattage: Some(650), ..Default::default() },
         }
     }
 
