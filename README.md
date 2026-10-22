@@ -11,6 +11,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-WAL%20·%203FN-003B57?logo=sqlite&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-77%20%E2%9C%94-3FB950)
+![Licencia](https://img.shields.io/badge/licencia-GPL--3.0-A42E2B?logo=gnu&logoColor=white)
 
 Aplicación de escritorio para cotizar y vender computadoras armadas **y
 productos individuales**, con inventario multi-proveedor (arroba y CVA),
@@ -265,6 +266,12 @@ SQLite en modo WAL: `presupuestos.db` en el directorio de datos de la app
 (macOS: `~/Library/Application Support/com.harunoyukki.generador-presupuestos/`).
 Migraciones automáticas con control de versión (`PRAGMA user_version`).
 
-## Licencia
+## 📄 Licencia
 
-Pendiente de definir.
+[GPL-3.0-or-later](LICENSE) — © 2026 HaruNoYukki.
+
+Este programa es software libre: puedes usarlo, estudiarlo, modificarlo y
+redistribuirlo bajo los términos de la **GNU General Public License v3**
+(o, a tu elección, cualquier versión posterior). Si distribuyes una versión
+modificada, debe publicarse bajo la misma licencia. Sin garantía: el
+programa se distribuye "tal cual" (secciones 15–16 de la licencia).
