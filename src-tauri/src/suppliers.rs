@@ -49,6 +49,9 @@ pub struct ParsedProduct {
     pub stock_individual: u32,
     /// Solo disponible en CD (CVA): no usable en ensambles.
     pub cd_only: bool,
+    /// Tipo explícito del importador (feed CVA); si viene, manda sobre la
+    /// clasificación por departamento/descripción.
+    pub kind_override: Option<ComponentKind>,
 }
 
 impl ParsedProduct {
@@ -63,7 +66,9 @@ impl ParsedProduct {
         } else {
             sniff_department(&self.description)
         };
-        let kind = classify_kind(&kind_department, &self.description, &self.sku);
+        let kind = self
+            .kind_override
+            .unwrap_or_else(|| classify_kind(&kind_department, &self.description, &self.sku));
         let supplier = self.supplier.clone();
         let stock_ensamble = self.stock_ensamble;
         let stock_individual = self.stock_individual;
@@ -213,7 +218,7 @@ pub fn adapters() -> Vec<Box<dyn SupplierAdapter>> {
 // Lectura y mapeo del libro
 // ---------------------------------------------------------------------
 
-fn normalize(s: &str) -> String {
+pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.to_uppercase().chars() {
         match ch {
@@ -515,7 +520,7 @@ pub fn classify_kind(department: &str, desc: &str, sku: &str) -> ComponentKind {
     kind
 }
 
-fn classify_full(department: &str, desc: &str, sku: &str) -> (ComponentKind, Specs) {
+pub fn classify_full(department: &str, desc: &str, sku: &str) -> (ComponentKind, Specs) {
     let d = desc.to_uppercase();
     let sku_up = sku.to_uppercase();
     let mut specs = Specs::default();
@@ -854,6 +859,7 @@ pub fn import_xlsx(path: &Path) -> Result<ParsedCatalog, String> {
             stock_ensamble,
             stock_individual,
             cd_only,
+            kind_override: None,
         });
     }
 

@@ -68,6 +68,7 @@ pub fn run() {
             commands::get_cva_feed_config,
             commands::set_cva_feed_config,
             commands::cva_feed_query,
+            commands::import_catalog_cva,
             commands::get_rate,
             commands::set_rate,
             commands::create_assembly,

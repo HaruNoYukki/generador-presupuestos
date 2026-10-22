@@ -56,6 +56,19 @@ pub struct AffectedAssembly {
     pub quantity: u32,
 }
 
+/// Resultado de importar del feed XML de CVA.
+#[derive(Debug, Clone, Serialize)]
+pub struct CvaImportResult {
+    pub updated: usize,
+    pub inserted: usize,
+    /// SKUs del proveedor que ya no venían y quedaron agotados (solo
+    /// import COMPLETO: `grupo=%`).
+    pub zeroed: usize,
+    /// Artículos descargados por grupo pedido.
+    pub groups: Vec<(String, usize)>,
+    pub out_of_stock: Vec<OutOfStockHit>,
+}
+
 /// Renglón de un ensamble vigente con su disponibilidad ANTES de importar.
 struct LiveItem {
     component_id: Uuid,
@@ -256,6 +269,7 @@ impl AppState {
             seed.list_date,
             seed.source_file,
             None,
+            None,
         )?;
         Ok((updated, inserted))
     }
@@ -287,6 +301,7 @@ impl AppState {
             parsed.list_date.unwrap_or_default(),
             format!("{} ({})", parsed.source_file, supplier),
             sweep,
+            None,
         )?;
         let out_of_stock = self.out_of_stock_report(&before);
         Ok(XlsxImportResult {
@@ -294,6 +309,102 @@ impl AppState {
             inserted,
             zeroed,
             supplier,
+            out_of_stock,
+        })
+    }
+
+    /// Importa del feed XML de CVA los grupos pedidos (coincidencia por
+    /// comodín `%grupo%`). Parcial por diseño: NO barre existencias — solo
+    /// el import COMPLETO (grupos vacío) lo hace, y es el de la ventana
+    /// nocturna 19:01–08:59 que trae todas las categorías y marcas.
+    pub fn import_catalog_cva(
+        &mut self,
+        grupos: &[String],
+        marca: Option<&str>,
+    ) -> Result<CvaImportResult, String> {
+        let config = crate::cva_feed::get_config(&self.db).unwrap_or_default();
+        if !config.is_configured() {
+            return Err(
+                "Configura tu número de cliente de CVA en Ajustes (y da de alta tu IP en su portal)."
+                    .into(),
+            );
+        }
+        let group_filters: Vec<String> = grupos
+            .iter()
+            .map(|g| g.trim().trim_matches('%').to_string())
+            .filter(|g| !g.is_empty())
+            .collect();
+        let full_import = group_filters.is_empty();
+
+        let mut products: Vec<crate::suppliers::ParsedProduct> = Vec::new();
+        let mut promos: BTreeMap<String, Option<db::OfferPromoRow>> = BTreeMap::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut groups: Vec<(String, usize)> = Vec::new();
+
+        let mut collect = |grupo: Option<&str>| -> Result<(), String> {
+            let items =
+                crate::cva_feed::fetch_items(&config.cliente, marca, grupo, None, None)?;
+            let label = grupo
+                .map(|g| g.trim_matches('%').to_string())
+                .unwrap_or_else(|| "%".to_string());
+            groups.push((label, items.len()));
+            for item in items {
+                if !seen.insert(item.codigo_fabricante.clone()) {
+                    continue;
+                }
+                promos.insert(
+                    item.codigo_fabricante.clone(),
+                    item.promo.as_ref().map(|p| db::OfferPromoRow {
+                        clave: p.clave.clone(),
+                        descripcion: p.descripcion.clone(),
+                        vencimiento: p.vencimiento.clone(),
+                        precio_descuento: p.precio_descuento.clone(),
+                        moneda: p.moneda.clone(),
+                        disponible: p.disponible,
+                    }),
+                );
+                products.push(crate::cva_feed::to_parsed_product(&item)?);
+            }
+            Ok(())
+        };
+
+        if full_import {
+            collect(None)?;
+        } else {
+            for g in &group_filters {
+                collect(Some(&format!("%{g}%")))?;
+            }
+        }
+
+        let components: Vec<Component> = products
+            .into_iter()
+            .map(|p| p.into_component())
+            .collect();
+        let before = self.snapshot_live_items();
+        let sweep = full_import.then_some("cva");
+        let list_date = chrono::Local::now().date_naive().to_string();
+        let source_file = if full_import {
+            "Feed XML CVA (catálogo completo)".to_string()
+        } else {
+            format!(
+                "Feed XML CVA (grupos: {})",
+                group_filters.join(", ")
+            )
+        };
+        let (updated, inserted, zeroed) = self.apply_import(
+            components,
+            None,
+            list_date,
+            source_file,
+            sweep,
+            Some(&promos),
+        )?;
+        let out_of_stock = self.out_of_stock_report(&before);
+        Ok(CvaImportResult {
+            updated,
+            inserted,
+            zeroed,
+            groups,
             out_of_stock,
         })
     }
@@ -373,6 +484,7 @@ impl AppState {
     /// UPSERT por SKU de todos los componentes y, si `sweep_supplier` viene,
     /// barrido de existencias del proveedor para los SKUs ausentes. Todo en
     /// una transacción: un Excel truncado no deja la base a medias.
+    /// `promos` (import CVA) refresca/limpia la promoción por SKU.
     /// Devuelve (actualizados, insertados, agotados por barrido).
     fn apply_import(
         &mut self,
@@ -381,6 +493,7 @@ impl AppState {
         list_date: String,
         source_file: String,
         sweep_supplier: Option<&str>,
+        promos: Option<&BTreeMap<String, Option<db::OfferPromoRow>>>,
     ) -> Result<(usize, usize, usize), String> {
         let tx = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let mut updated = 0usize;
@@ -397,6 +510,15 @@ impl AppState {
                 .map_err(|e| format!("upsert_master {}: {e}", comp.sku))?;
             db::upsert_offer(&tx, &comp)
                 .map_err(|e| format!("upsert_offer {}: {e}", comp.sku))?;
+            if let Some(promos) = promos {
+                db::upsert_offer_promo(
+                    &tx,
+                    &comp.sku,
+                    supplier,
+                    promos.get(&comp.sku).and_then(|p| p.as_ref()),
+                )
+                .map_err(|e| format!("upsert_offer_promo {}: {e}", comp.sku))?;
+            }
             present.insert(comp.sku.clone());
             if existed {
                 updated += 1;
@@ -1047,12 +1169,12 @@ mod tests {
     fn first_of(state: &AppState, kind: ComponentKind) -> Uuid {
         state
             .catalog()
-            .search(Some(kind), "")
+            .search(Some(kind), "", false)
             .iter()
             // Las SODIMM son para laptop: el flujo de escritorio usa DIMM.
             .find(|c| !crate::domain::assembly::is_laptop_ram(c))
             .map(|c| c.id)
-            .or_else(|| state.catalog().search(Some(kind), "").first().map(|c| c.id))
+            .or_else(|| state.catalog().search(Some(kind), "", false).first().map(|c| c.id))
             .expect("debe haber al menos un componente de ese tipo")
     }
 
@@ -1790,6 +1912,77 @@ mod tests {
         // Revertir una oferta manual no procede.
         let err = state.clear_offer_override(psu.id, "pch").unwrap_err();
         assert!(err.contains("no tienen valor de lista"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// El pipeline del feed CVA (sin HTTP): parseo del XML de ejemplo del
+    /// usuario → ParsedProduct → apply_import. Verifica precio efectivo con
+    /// promo, existencias por sucursal, tipo «otro» para lo no-ensamble y
+    /// la fila de promoción persistida.
+    #[test]
+    fn cva_feed_import_stores_promo_branches_and_kind() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let items = crate::cva_feed::parse_xml(crate::cva_feed::SAMPLE_FEED).unwrap();
+        let mut components = Vec::new();
+        let mut promos: BTreeMap<String, Option<db::OfferPromoRow>> = BTreeMap::new();
+        for item in &items {
+            promos.insert(
+                item.codigo_fabricante.clone(),
+                item.promo.as_ref().map(|p| db::OfferPromoRow {
+                    clave: p.clave.clone(),
+                    descripcion: p.descripcion.clone(),
+                    vencimiento: p.vencimiento.clone(),
+                    precio_descuento: p.precio_descuento.clone(),
+                    moneda: p.moneda.clone(),
+                    disponible: p.disponible,
+                }),
+            );
+            components.push(crate::cva_feed::to_parsed_product(item).unwrap().into_component());
+        }
+        let (_, inserted, _) = state
+            .apply_import(
+                components,
+                None,
+                "2026-10-22".into(),
+                "Feed XML CVA (prueba)".into(),
+                None,
+                Some(&promos),
+            )
+            .unwrap();
+        assert_eq!(inserted, 3);
+
+        // CPU: precio de promo como efectivo, sucursales, departamento mapeado.
+        let cpu = state.find_by_sku("100-100000457BOX").unwrap();
+        assert_eq!(cpu.kind, crate::domain::component::ComponentKind::Cpu);
+        assert_eq!(cpu.price.amount, rust_decimal_macros::dec!(72.63));
+        assert!(cpu.on_promotion);
+        assert_eq!(cpu.stock_ensamble_total, 856);
+        assert_eq!(cpu.stock_individual_total, 863);
+        assert_eq!(cpu.offers[0].stock_label, "CDM 856 · Retail CDMX 0 (+1 suc.)");
+        assert_eq!(cpu.department, "PROCESADORES");
+
+        // Fuente: marca canónica sin (OEM) y watts de la descripción.
+        let psu = state.find_by_sku("GP-P450B").unwrap();
+        assert_eq!(psu.kind, crate::domain::component::ComponentKind::Psu);
+        assert_eq!(psu.brand, "GIGABYTE");
+        assert_eq!(psu.specs.wattage, Some(450));
+
+        // Memoria USB: «otro», vendible en venta individual, jamás en ensamble.
+        let usb = state.find_by_sku("USB-128").unwrap();
+        assert_eq!(usb.kind, crate::domain::component::ComponentKind::Other);
+        assert_eq!(usb.stock_individual_total, 50);
+
+        // Promo persistida como entidad propia.
+        let n: i64 = state
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM offer_promos WHERE sku = '100-100000457BOX'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 

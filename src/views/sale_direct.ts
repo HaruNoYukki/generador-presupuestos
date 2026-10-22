@@ -55,18 +55,79 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
   // ------------------------------------------------------------------
   // Búsqueda y carrito
   // ------------------------------------------------------------------
-  function searchResults(query: string): ComponentDto[] {
+  // La venta individual vende CUALQUIER producto con existencias — incluidos
+  // los tipo «otro» (cámaras, cables, memorias USB, etc.). El texto coincide
+  // contra SKU, descripción (ahí viene el modelo) y marca.
+  function searchResults(query: string, brand: string): ComponentDto[] {
     const q = query.trim().toUpperCase();
-    const list = components().filter((c) => c.kind !== 'other');
-    if (!q) return [];
+    const list = components().filter((c) => brand === '' || c.brand === brand);
+    if (!q && brand === '') return [];
     return list
       .filter(
         (c) =>
+          !q ||
           c.sku.toUpperCase().includes(q) ||
           c.description.toUpperCase().includes(q) ||
           c.brand.toUpperCase().includes(q),
       )
-      .slice(0, 12);
+      .slice(0, 50);
+  }
+
+  function renderSearch() {
+    let brandFilter = '';
+    const brandSel = el('select', { class: 'input' },
+      el('option', { value: '' }, 'Todas las marcas'),
+    ) as HTMLSelectElement;
+    // Marcas del catálogo (mismos catálogos normalizados que los filtros).
+    api.catalogFilters()
+      .then((f) => {
+        brandSel.replaceChildren(
+          el('option', { value: '' }, 'Todas las marcas'),
+          ...f.brands.map((b) => el('option', { value: b }, b)),
+        );
+      })
+      .catch(() => {});
+    brandSel.addEventListener('change', () => {
+      brandFilter = brandSel.value;
+      runSearch();
+    });
+
+    const input = el('input', {
+      class: 'input search',
+      placeholder: 'Agregar por SKU, modelo, descripción o marca…',
+    }) as HTMLInputElement;
+    const results = el('div', { class: 'search-results' });
+    function runSearch() {
+      const found = searchResults(input.value, brandFilter);
+      results.replaceChildren(
+        ...found.map((c) => {
+          const row = el('div', { class: 'picker-row' },
+            el('div', { class: 'picker-desc' },
+              el('div', { class: 'desc' }, c.description, procChip(c)),
+              el('div', { class: 'sub' },
+                `${c.sku} · ${c.brand} · vendible: ${sellableStock(c)}`)),
+            el('div', { class: 'picker-side' },
+              el('div', { class: 'strong' }, mxn(c.price_mxp.amount)),
+              el('span', { class: 'chip chip-ok' }, '+ agregar')),
+          );
+          row.addEventListener('click', () => {
+            addToCart(c.id);
+            input.value = '';
+            results.replaceChildren();
+            input.focus();
+          });
+          return row;
+        }),
+        found.length === 0 && (input.value.trim() || brandFilter)
+          ? el('p', { class: 'muted' }, 'Sin resultados.')
+          : el('span'),
+      );
+    }
+    input.addEventListener('input', runSearch);
+    return el('div', {},
+      el('div', { class: 'toolbar' }, brandSel, input),
+      results,
+    );
   }
 
   /** Venta individual: se usan por igual Disp y Disp CD (CVA) y el stock
@@ -145,41 +206,6 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
       buttons[bi++]?.addEventListener('click', () => setQty(item.component_id, 0));
     }
     return table;
-  }
-
-  function renderSearch() {
-    const input = el('input', {
-      class: 'input search',
-      placeholder: 'Agregar por SKU, descripción o marca…',
-    }) as HTMLInputElement;
-    const results = el('div', { class: 'search-results' });
-    input.addEventListener('input', () => {
-      const found = searchResults(input.value);
-      results.replaceChildren(
-        ...found.map((c) => {
-          const row = el('div', { class: 'picker-row' },
-            el('div', { class: 'picker-desc' },
-              el('div', { class: 'desc' }, c.description, procChip(c)),
-              el('div', { class: 'sub' },
-                `${c.sku} · ${c.brand} · vendible: ${sellableStock(c)}`)),
-            el('div', { class: 'picker-side' },
-              el('div', { class: 'strong' }, mxn(c.price_mxp.amount)),
-              el('span', { class: 'chip chip-ok' }, '+ agregar')),
-          );
-          row.addEventListener('click', () => {
-            addToCart(c.id);
-            input.value = '';
-            results.replaceChildren();
-            input.focus();
-          });
-          return row;
-        }),
-        found.length === 0 && input.value.trim()
-          ? el('p', { class: 'muted' }, 'Sin resultados.')
-          : el('span'),
-      );
-    });
-    return el('div', {}, input, results);
   }
 
   // ------------------------------------------------------------------

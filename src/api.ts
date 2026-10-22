@@ -9,6 +9,7 @@ import type {
   ComponentDto,
   CostBreakdown,
   CvaFeedConfig,
+  CvaImportSummary,
   ProfitReport,
   RateInfo,
   ValidationReport,
@@ -73,8 +74,13 @@ export const api = {
   aiNormalizeTitles: (limit: number) =>
     call<{ improved: number; remaining: number }>('ai_normalize_titles', { limit }),
 
-  listComponents: () =>
-    call<ComponentDto[]>('list_components', { kind: null, search: null }),
+  /** includeOther: incluye los tipo «otro» (venta individual vende todo). */
+  listComponents: (includeOther?: boolean) =>
+    call<ComponentDto[]>('list_components', {
+      kind: null,
+      search: null,
+      include_other: includeOther ?? false,
+    }),
 
   addManualComponent: (input: NewManualComponent) =>
     call<ComponentDto>('add_manual_component', { input }),
@@ -91,6 +97,18 @@ export const api = {
 
   setCvaFeedConfig: (config: CvaFeedConfig) =>
     call<void>('set_cva_feed_config', { config }),
+
+  /** Consulta puntual de precio/existencia de un SKU al feed CVA. */
+  cvaFeedQuery: (sku: string) =>
+    call<unknown[]>('cva_feed_query', { sku }),
+
+  /** Importa del feed XML de CVA los grupos pedidos (vacío = catálogo
+   *  completo; solo sirve en el horario 19:01–08:59 y SÍ barre ausentes). */
+  importCatalogCva: (grupos: string[], marca?: string | null) =>
+    call<CvaImportSummary>('import_catalog_cva', {
+      grupos,
+      marca: marca ?? null,
+    }),
 
   removeManualComponent: (id: string) =>
     call<boolean>('remove_manual_component', { id }),

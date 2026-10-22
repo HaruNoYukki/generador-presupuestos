@@ -128,7 +128,9 @@ function renderShell() {
 
 async function refreshComponents(): Promise<ComponentDto[]> {
   // Mutación in-place: las vistas conservan la referencia a la lista.
-  const fresh = await api.listComponents();
+  // Incluye los tipo «otro»: la venta individual vende cualquier cosa y el
+  // picker de ensambles los descarta por kinds del slot.
+  const fresh = await api.listComponents(true);
   state.components.length = 0;
   state.components.push(...fresh);
   return state.components;
@@ -146,7 +148,7 @@ function setTab(tab: Tab) {
 
 async function boot() {
   state.overview = await api.catalogOverview();
-  state.components = await api.listComponents();
+  state.components = await api.listComponents(true);
   renderShell();
 }
 

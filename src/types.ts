@@ -159,11 +159,22 @@ export interface XlsxImportSummary {
   out_of_stock: OutOfStockHit[];
 }
 
-/** Configuración del servicio XML de CVA (consultas, en preparación). */
+/** Configuración del feed XML de CVA: número de cliente (la auth es por
+ *  IP, dada de alta en el portal de CVA). */
 export interface CvaFeedConfig {
-  endpoint: string;
-  client_key: string;
+  cliente: string;
   configured?: boolean;
+}
+
+/** Resumen de importación del feed CVA (mismo informe que el XLSX más el
+ *  conteo de artículos descargados por grupo). */
+export interface CvaImportSummary {
+  updated: number;
+  inserted: number;
+  zeroed: number;
+  total: number;
+  groups: [string, number][];
+  out_of_stock: OutOfStockHit[];
 }
 
 export interface ExchangeRate {

@@ -131,7 +131,44 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if version < 9 {
         migrate_v9_offer_overrides(conn)?;
     }
-    conn.pragma_update(None, "user_version", 9)?;
+    if version < 10 {
+        migrate_v10_offer_promos(conn)?;
+    }
+    conn.pragma_update(None, "user_version", 10)?;
+    Ok(())
+}
+
+/// v10: promociones vigentes por oferta (feed XML de CVA). Entidad propia
+/// 1:1 con la oferta del proveedor que la trae; el precio efectivo de la
+/// oferta ya es el de promoción cuando existe, aquí queda el detalle
+/// (descripción, vencimiento, unidades) como referencia. Solo un import
+/// del MISMO proveedor la refresca o limpia.
+fn migrate_v10_offer_promos(conn: &Connection) -> rusqlite::Result<()> {
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='offer_promos'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if has == 0 {
+        conn.execute_batch(
+            "CREATE TABLE offer_promos (
+                 sku             TEXT NOT NULL,
+                 supplier        TEXT NOT NULL,
+                 clave           TEXT,
+                 descripcion     TEXT,
+                 vencimiento     TEXT,
+                 precio_descuento TEXT,
+                 moneda          TEXT,
+                 disponible      INTEGER,
+                 updated_at      TEXT,
+                 PRIMARY KEY (sku, supplier),
+                 FOREIGN KEY (sku, supplier)
+                     REFERENCES product_offers(sku, supplier) ON DELETE CASCADE
+             );",
+        )?;
+    }
     Ok(())
 }
 
@@ -905,9 +942,19 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
             // Reglas por proveedor sobre el desglose de almacenes
             match o.supplier.as_str() {
                 "cva" => {
-                    o.stock_ensamble = *o.stocks.get("disp").unwrap_or(&0);
-                    o.stock_individual =
-                        o.stock_ensamble + o.stocks.get("disp_cd").copied().unwrap_or(0);
+                    // Dos formatos según el origen de la oferta:
+                    // - Excel (disp/disp_cd): ensamble = Disp; venta = Disp + Disp CD.
+                    // - Feed XML (sucursales=1): ensamble = Retail CDMX + CDM México;
+                    //   venta individual = suma de TODAS las sucursales.
+                    if o.stocks.contains_key("disp") || o.stocks.contains_key("disp_cd") {
+                        o.stock_ensamble = *o.stocks.get("disp").unwrap_or(&0);
+                        o.stock_individual =
+                            o.stock_ensamble + o.stocks.get("disp_cd").copied().unwrap_or(0);
+                    } else {
+                        o.stock_ensamble = o.stocks.get("retail_cdmx").copied().unwrap_or(0)
+                            + o.stocks.get("cdm_mexico").copied().unwrap_or(0);
+                        o.stock_individual = o.stocks.values().sum();
+                    }
                 }
                 "arroba" => {
                     let s: u32 = ["a_cen", "ave_2", "cedis"]
@@ -1039,11 +1086,28 @@ pub fn load_products(conn: &Connection) -> rusqlite::Result<Vec<Component>> {
 /// Etiqueta legible del desglose de una oferta, según sus almacenes.
 fn stock_label(supplier: &str, stocks: &BTreeMap<String, u32>) -> String {
     match supplier {
-        "cva" => format!(
-            "Disp {} · Disp CD {}",
-            stocks.get("disp").copied().unwrap_or(0),
-            stocks.get("disp_cd").copied().unwrap_or(0)
-        ),
+        "cva" => {
+            if stocks.contains_key("disp") || stocks.contains_key("disp_cd") {
+                format!(
+                    "Disp {} · Disp CD {}",
+                    stocks.get("disp").copied().unwrap_or(0),
+                    stocks.get("disp_cd").copied().unwrap_or(0)
+                )
+            } else {
+                // Feed XML: todas las sucursales (solo las con existencia).
+                let cdm = stocks.get("cdm_mexico").copied().unwrap_or(0);
+                let retail = stocks.get("retail_cdmx").copied().unwrap_or(0);
+                let otras = stocks
+                    .keys()
+                    .filter(|k| k.as_str() != "cdm_mexico" && k.as_str() != "retail_cdmx")
+                    .count();
+                let mut s = format!("CDM {cdm} · Retail CDMX {retail}");
+                if otras > 0 {
+                    s.push_str(&format!(" (+{otras} suc.)"));
+                }
+                s
+            }
+        }
         "arroba" => format!(
             "CEN {} · AVE-2 {} · CEDIS {}",
             stocks.get("a_cen").copied().unwrap_or(0),
@@ -1059,6 +1123,18 @@ fn stock_label(supplier: &str, stocks: &BTreeMap<String, u32>) -> String {
         ),
         _ => String::new(),
     }
+}
+
+/// Promoción vigente reportada por el feed de CVA (referencia; el precio
+/// efectivo ya vive en `product_offers.price_amount`).
+#[derive(Debug, Clone, Default)]
+pub struct OfferPromoRow {
+    pub clave: Option<String>,
+    pub descripcion: Option<String>,
+    pub vencimiento: Option<String>,
+    pub precio_descuento: Option<String>,
+    pub moneda: Option<String>,
+    pub disponible: Option<i64>,
 }
 
 /// Corrección manual de precio/existencia de UNA oferta de lista (v9).
@@ -1101,6 +1177,50 @@ pub fn clear_offer_override(conn: &Connection, sku: &str, supplier: &str) -> rus
         "DELETE FROM offer_overrides WHERE sku = ?1 AND supplier = ?2",
         params![sku, supplier],
     )?;
+    Ok(())
+}
+
+/// Promoción vigente de una oferta (feed CVA). `None` limpia la fila:
+/// un re-import del MISMO proveedor sin promo indica que ya no aplica.
+pub fn upsert_offer_promo(
+    conn: &Connection,
+    sku: &str,
+    supplier: &str,
+    promo: Option<&OfferPromoRow>,
+) -> rusqlite::Result<()> {
+    match promo {
+        None => {
+            conn.execute(
+                "DELETE FROM offer_promos WHERE sku = ?1 AND supplier = ?2",
+                params![sku, supplier],
+            )?;
+        }
+        Some(p) => {
+            conn.execute(
+                "INSERT INTO offer_promos (sku, supplier, clave, descripcion, vencimiento,
+                        precio_descuento, moneda, disponible, updated_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8, datetime('now'))
+                 ON CONFLICT(sku, supplier) DO UPDATE SET
+                    clave            = excluded.clave,
+                    descripcion      = excluded.descripcion,
+                    vencimiento      = excluded.vencimiento,
+                    precio_descuento = excluded.precio_descuento,
+                    moneda           = excluded.moneda,
+                    disponible       = excluded.disponible,
+                    updated_at       = datetime('now')",
+                params![
+                    sku,
+                    supplier,
+                    p.clave,
+                    p.descripcion,
+                    p.vencimiento,
+                    p.precio_descuento,
+                    p.moneda,
+                    p.disponible
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 

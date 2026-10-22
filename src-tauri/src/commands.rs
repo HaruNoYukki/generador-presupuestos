@@ -53,20 +53,24 @@ pub fn catalog_overview(state: State<'_, SharedState>) -> CmdResult<CatalogOverv
     })
 }
 
+/// `include_other`: incluye los productos tipo «otro» (no ensambles) —
+/// la venta individual vende cualquier cosa con existencias.
 #[tauri::command]
 pub fn list_components(
     state: State<'_, SharedState>,
     kind: Option<String>,
     search: Option<String>,
+    include_other: Option<bool>,
 ) -> CmdResult<Vec<ComponentDto>> {
     let s = state.0.lock().unwrap();
     let kind = kind
         .as_deref()
         .and_then(ComponentKind::parse);
     let query = search.unwrap_or_default();
+    let include_other = include_other.unwrap_or(false);
     let rate = s.rate();
     Ok(s.catalog()
-        .search(kind, &query)
+        .search(kind, &query, include_other)
         .iter()
         .map(|c| dto(c, &rate))
         .collect())
@@ -133,13 +137,12 @@ pub fn clear_offer_override(
 }
 
 // ---------------------------------------------------------------------
-// Consultas XML de CVA (esqueleto: detalles del servicio por definir)
+// Consultas XML de CVA
 // ---------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub struct CvaFeedConfigDto {
-    pub endpoint: String,
-    pub client_key: String,
+    pub cliente: String,
     pub configured: bool,
 }
 
@@ -149,8 +152,7 @@ pub fn get_cva_feed_config(state: State<'_, SharedState>) -> CmdResult<CvaFeedCo
     let cfg = crate::cva_feed::get_config(&s.db()).unwrap_or_default();
     let configured = cfg.is_configured();
     Ok(CvaFeedConfigDto {
-        endpoint: cfg.endpoint,
-        client_key: cfg.client_key,
+        cliente: cfg.cliente,
         configured,
     })
 }
@@ -168,9 +170,43 @@ pub fn set_cva_feed_config(
 pub fn cva_feed_query(
     state: State<'_, SharedState>,
     sku: String,
-) -> CmdResult<crate::cva_feed::FeedQuote> {
+) -> CmdResult<Vec<crate::cva_feed::FeedQuote>> {
     let s = state.0.lock().unwrap();
     crate::cva_feed::query(&s.db(), &sku)
+}
+
+/// Resumen de una importación del feed CVA: contadores + cotizaciones por
+/// grupo + el informe de ensambles vigentes afectados.
+#[derive(Serialize)]
+pub struct CvaImportSummary {
+    pub updated: usize,
+    pub inserted: usize,
+    pub zeroed: usize,
+    pub total: usize,
+    pub groups: Vec<(String, usize)>,
+    pub out_of_stock: Vec<OutOfStockHit>,
+}
+
+/// Importa del feed XML de CVA los grupos pedidos (nombres con o sin %,
+/// se consultan como `%<grupo>%`). Con `grupos` vacío importa TODO el
+/// catálogo (`grupo=%`) — solo sirve en el horario 19:01–08:59 y SÍ barre
+/// existencias de los SKU ausentes; los importes parciales no barren.
+#[tauri::command]
+pub fn import_catalog_cva(
+    state: State<'_, SharedState>,
+    grupos: Vec<String>,
+    marca: Option<String>,
+) -> CmdResult<CvaImportSummary> {
+    let mut s = state.0.lock().unwrap();
+    let r = s.import_catalog_cva(&grupos, marca.as_deref())?;
+    Ok(CvaImportSummary {
+        updated: r.updated,
+        inserted: r.inserted,
+        zeroed: r.zeroed,
+        total: s.catalog().components.len(),
+        groups: r.groups,
+        out_of_stock: r.out_of_stock,
+    })
 }
 
 #[derive(Serialize)]

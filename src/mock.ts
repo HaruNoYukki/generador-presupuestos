@@ -104,11 +104,10 @@ interface MockState {
   saleNotes: unknown[];
 }
 
-// Configuración del servicio XML de CVA (mock en memoria; la consulta
-// real no está implementada ni en el backend todavía).
-let mockFeedConfig: { endpoint: string; client_key: string; configured: boolean } = {
-  endpoint: '',
-  client_key: '',
+// Configuración del feed XML de CVA (mock en memoria; el import real
+// solo existe en la app de escritorio).
+let mockFeedConfig: { cliente: string; configured: boolean } = {
+  cliente: '',
   configured: false,
 };
 
@@ -527,7 +526,12 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       } satisfies CatalogOverview;
     }
     case 'list_components':
-      return state.components.filter((c) => c.kind !== 'other').map(asDto);
+      // include_other: la venta individual ve TODO el catálogo; el picker
+      // de ensambles y el catálogo filtran por kinds del lado del cliente.
+      if (!args.include_other) {
+        return state.components.filter((c) => c.kind !== 'other').map(asDto);
+      }
+      return state.components.map(asDto);
     case 'get_component':
       return asDto(state.components.find((c) => c.id === args.id) ?? state.components[0]);
     case 'add_manual_component': {
@@ -609,11 +613,14 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       return mockFeedConfig;
     case 'set_cva_feed_config':
       mockFeedConfig = {
-        endpoint: String((args.config as Record<string, unknown>).endpoint ?? ''),
-        client_key: String((args.config as Record<string, unknown>).client_key ?? ''),
-        configured: true,
+        cliente: String((args.config as Record<string, unknown>).cliente ?? ''),
+        configured: !!mockFeedConfig.cliente,
       };
       return;
+    case 'cva_feed_query':
+      return [];
+    case 'import_catalog_cva':
+      throw new Error('Importar del feed CVA solo está disponible en la aplicación de escritorio.');
     case 'remove_manual_component':
       state.components = state.components.filter((c) => c.id !== args.id);
       return true;

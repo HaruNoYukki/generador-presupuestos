@@ -1,18 +1,33 @@
-# Generador de Presupuestos
+<div align="center">
 
-Aplicación de escritorio (Rust + Tauri v2) para cotizar y vender
-computadoras armadas y productos individuales, con inventario multi-proveedor
-(arroba y CVA), cálculo de ganancias, notas de venta exportables a PDF/PNG y
-base de datos SQLite normalizada.
+<img src="src/assets/nykniu-logo.png" alt="Generador de Presupuestos" width="110">
 
-## Requisitos
+# ⚙️ Generador de Presupuestos
 
-- [Rust](https://rustup.rs) (estable)
-- [Node.js](https://nodejs.org) 18+
-- [LibreOffice](https://www.libreoffice.org) (solo si vas a importar listas
-  en `.xls`; sirve para la conversión interna — ver abajo)
+**Cotiza, arma y vende equipos de cómputo — con inventario multi-proveedor en tiempo real.**
 
-## Compilar y ejecutar
+![Rust](https://img.shields.io/badge/Rust-estable-DEA584?logo=rust&logoColor=3b4252)
+![Tauri](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=3b4252)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-WAL%20·%203FN-003B57?logo=sqlite&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-77%20%E2%9C%94-3FB950)
+
+Aplicación de escritorio para cotizar y vender computadoras armadas **y
+productos individuales**, con inventario multi-proveedor (arroba y CVA),
+cálculo de ganancias, notas de venta exportables a PDF/PNG y base de datos
+SQLite normalizada.
+
+</div>
+
+---
+
+## 🚀 Compilar y ejecutar
+
+| Requisito | Nota |
+|---|---|
+| [Rust](https://rustup.rs) | canal estable |
+| [Node.js](https://nodejs.org) 18+ | |
+| [LibreOffice](https://www.libreoffice.org) | solo para listas `.xls` (conversión interna) |
 
 ```bash
 npm install
@@ -20,12 +35,12 @@ npm run tauri dev     # desarrollo
 npm run tauri build   # producción (.app / .dmg / .msi según tu SO)
 ```
 
-## Primera corrida (importante)
+## 📥 Primera corrida (importante)
 
 La aplicación **no incluye catálogo de productos**: cada instalación genera
 el suyo desde el Excel de su proveedor. Dos caminos:
 
-### Opción A — Importar Excel directo (recomendada)
+### Opción A — Importar Excel directo ✅ (recomendada)
 
 1. Abre la app → pestaña **Ajustes**.
 2. Botón **"⤒ Importar Excel del proveedor (.xlsx)"** y elige la lista.
@@ -48,11 +63,12 @@ python3 scripts/extract_catalog.py "ruta/a/lista.xlsx"
 La app la detecta automáticamente al arrancar (busca en el directorio de
 datos, en los recursos del paquete y en `data/`).
 
-> ⚠️ **`data/catalog_seed.json` no se publica en el repositorio** porque
+> [!WARNING]
+> **`data/catalog_seed.json` no se publica en el repositorio** porque
 > contiene precios de proveedores. Si no existe, la app compila y arranca
 > con catálogo vacío.
 
-## Proveedores (`src-tauri/src/suppliers.rs`)
+## 🏭 Proveedores (`src-tauri/src/suppliers.rs`)
 
 Cada formato de lista es un **adaptador** (`SupplierAdapter`): nombre,
 detección por firma de encabezados y valores por defecto. La lectura del
@@ -69,14 +85,29 @@ acentos y mayúsculas) y la clasificación de tipos son compartidos.
 Para agregar un proveedor nuevo: implementa `SupplierAdapter` con su
 `detect()` y agrégalo a `adapters()` (específicos antes que genéricos).
 
-### Consultas CVA (XML) — en preparación
+### 🌐 Feed XML de CVA
 
-`src-tauri/src/cva_feed.rs` deja lista la estructura para consultar precio
-y existencia directamente al servicio XML de CVA (endpoint y clave de
-cliente ya se guardan desde **Ajustes → Consultas CVA**). La llamada y el
-parseo se implementarán cuando se definan los detalles del servicio.
+`src-tauri/src/cva_feed.rs` consulta e importa directo del servicio XML de
+CVA (`lista_precios.xml`). Configura tu **número de cliente** en
+**Ajustes → Feed XML de CVA** y recuerda **dar de alta la IP** del equipo
+en el portal de CVA. El servicio solo responde de **19:01 a 08:59** — fuera
+de ese horario devuelve la lista vacía (la app lo avisa).
 
-### Catálogos de atributos (Ajustes)
+- **Importar grupos de ensamble**: los 11 grupos de interés con
+  `sucursales=1&promos=1&subgpo=1`. Dentro de memorias y energía, lo que no
+  es de ensamble (USB, flash, UPS…) se importa como tipo «otro» — vendible
+  en venta individual, nunca en ensambles.
+- **Precio efectivo = precio de promoción** cuando existe
+  (`PrecioDescuento`); la promo queda registrada (descripción, vencimiento,
+  unidades) en `offer_promos` como referencia.
+- **Marcas canónicas**: «ASUS (OEM)» se importa como ASUS (se recorta lo
+  que va entre paréntesis).
+- Los importes **parciales no barren** existencias; el import **completo**
+  (`grupo=%`, todas las categorías y marcas, para crear el catálogo entero)
+  sí agota los SKU ausentes — disponible por comando, pensado para la
+  ventana nocturna.
+
+### 🗂️ Catálogos de atributos (Ajustes)
 
 Marca, Socket, DDR, Factor de forma y Formato de memoria RAM son
 **catálogos normalizados** (tablas `brands` y `spec_options`): los
@@ -86,7 +117,17 @@ evitar problemas de normalización. Valores nuevos se agregan desde
 Los imports de listas también registran automáticamente cualquier valor
 nuevo que traigan.
 
-## Inventario multi-proveedor
+## 📦 Inventario multi-proveedor
+
+```mermaid
+flowchart LR
+    XLS["📊 Excel del proveedor"] --> UPSERT
+    FEED["🌐 Feed XML CVA"] --> UPSERT["⤓ UPSERT por SKU"]
+    PCH["✍️ Captura manual / PCH"] --> UPSERT
+    UPSERT --> DB[("SQLite 💾")]
+    DB --> ENS["🖥️ Ensamble<br/>Retail CDMX + CDM Méx"]
+    DB --> IND["🛒 Venta individual<br/>cualquier producto, cualquier sucursal"]
+```
 
 - El mismo SKU puede existir en varios proveedores con precio y
   existencias distintos (`product_offers`, clave `(sku, supplier)`).
@@ -94,10 +135,19 @@ nuevo que traigan.
   procedencia (chip @ o CVA).
 - **Inventario desglosado** por proveedor en la vista Catálogo.
 - **Stock por flujo**:
-  - Ensamble: arroba → CEN+AVE-2+CEDIS; CVA → **Disp**.
-  - Venta individual: arroba → igual; CVA → **Disp + Disp CD**.
+  - Ensamble: arroba → CEN+AVE-2+CEDIS; CVA → **Disp** (feed XML: Retail
+    CDMX + CDM México).
+  - Venta individual: arroba → igual; CVA → **Disp + Disp CD** (feed XML:
+    **cualquier sucursal**).
+- **Venta individual = cualquier producto con existencias** 🛒 (cámaras,
+  cables, memorias USB…): la búsqueda incluye los tipo «otro» y tiene
+  **filtro por marca** además del texto (SKU, modelo, descripción o marca).
 - Los artículos **solo-CD** (CVA) van bloqueados en el picker de ensambles
   con la marca "SOLO CD · no ensamble".
+
+<details>
+<summary><b>🔒 Existencias, edición y correcciones protegidas</b></summary>
+
 - **Sin existencia no se ensambla**: el picker bloquea los agotados
   ("SIN EXISTENCIA"), el botón `+` de cantidad no pasa del disponible y un
   renglón que pide más de lo que hay es **error de validación**
@@ -137,7 +187,21 @@ nuevo que traigan.
   ensamble que contiene productos de PCH aparece un banner con cada uno
   (descripción y SKU) pidiendo verificar existencia manualmente.
 
-## Reglas de negocio
+</details>
+
+## ⚖️ Reglas de negocio
+
+```mermaid
+flowchart LR
+    subgraph ensambles ["🖥️ Flujo ensambles"]
+        direction LR
+        A["Ensamble"] --> B["Ganancias<br/>10/20/30% · objetivo"] --> C["Cotización<br/>DDMMAA-NC"] --> D["Nota de venta<br/>DDMMAAAA-NC · PDF/PNG"]
+    end
+    subgraph individual ["🛒 Flujo individuales"]
+        direction LR
+        E["Carrito con<br/>cualquier producto"] --> F["Nota directa<br/>N/S opcionales"]
+    end
+```
 
 - **Tipo de cambio**: USD→MXP con el T.C **redondeado hacia arriba al
   entero** (18.52 → 19). El T.C de referencia es siempre **el más elevado**
@@ -164,12 +228,13 @@ nuevo que traigan.
   normaliza los títulos del catálogo en lotes de 100. Los ya normalizados
   quedan excluidos de las corridas siguientes.
 
-## Estructura
+## 🗂️ Estructura
 
 ```
 src-tauri/src/
-├── db.rs           SQLite (v8): maestro + ofertas + existencias (3FN/BCNF)
-│                   y overrides manuales protegidos del import
+├── db.rs           SQLite (v10): maestro + ofertas + existencias 3FN/BCNF,
+│                   overrides manuales y promos protegidos del import
+├── cva_feed.rs     Consultas e importación al feed XML de CVA
 ├── domain/         Dominio puro: componente, dinero, ensamble, costo,
 │                   ganancias, carrito, notas de venta
 ├── suppliers.rs    Importación de Excel por proveedor (calamine)
@@ -184,7 +249,7 @@ docs/esquema.mmd    Diagrama de la base (Mermaid)
 scripts/            extract_catalog.py (semilla JSON opcional)
 ```
 
-## Tests
+## 🧪 Tests
 
 ```bash
 cd src-tauri
@@ -194,7 +259,7 @@ cargo test
 Los fixtures de prueba (`tests/fixtures/`) contienen **datos sintéticos**;
 las listas reales de proveedores no se publican en el repositorio.
 
-## Persistencia
+## 💾 Persistencia
 
 SQLite en modo WAL: `presupuestos.db` en el directorio de datos de la app
 (macOS: `~/Library/Application Support/com.harunoyukki.generador-presupuestos/`).

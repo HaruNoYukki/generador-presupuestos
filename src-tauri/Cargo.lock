@@ -3797,6 +3797,7 @@ dependencies = [
  "base64 0.22.1",
  "calamine",
  "chrono",
+ "quick-xml",
  "rusqlite",
  "rust_decimal",
  "rust_decimal_macros",

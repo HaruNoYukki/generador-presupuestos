@@ -212,14 +212,20 @@ impl Catalog {
     }
 
     /// Búsqueda por texto libre (SKU, descripción y marca) y opcionalmente
-    /// por tipo. Los de tipo Other solo aparecen si se piden explícitamente.
-    pub fn search(&self, kind: Option<ComponentKind>, query: &str) -> Vec<&Component> {
+    /// por tipo. Los de tipo «otro» (no ensambles: cámaras, cables, USB…)
+    /// solo aparecen con `include_other` — la venta individual los pide.
+    pub fn search(
+        &self,
+        kind: Option<ComponentKind>,
+        query: &str,
+        include_other: bool,
+    ) -> Vec<&Component> {
         let q = query.trim().to_uppercase();
         self.components
             .iter()
             .filter(|c| {
                 let kind_ok = match kind {
-                    None => c.kind != ComponentKind::Other,
+                    None => include_other || c.kind != ComponentKind::Other,
                     Some(k) => c.kind == k,
                 };
                 if !kind_ok {
@@ -319,9 +325,9 @@ mod tests {
         assert_eq!(c.kind, ComponentKind::Cpu);
         assert_eq!(c.specs.includes_cooler, Some(false));
 
-        let found = cat.search(Some(ComponentKind::Case), "fuente");
+        let found = cat.search(Some(ComponentKind::Case), "fuente", false);
         assert_eq!(found.len(), 1);
-        let none = cat.search(Some(ComponentKind::Cpu), "evotec");
+        let none = cat.search(Some(ComponentKind::Cpu), "evotec", false);
         assert!(none.is_empty());
     }
 
@@ -394,7 +400,7 @@ mod tests {
             .all(|c| c.condition == Condition::Nuevo));
 
         // Las búsquedas por tipo funcionan sobre el catálogo real
-        assert_eq!(cat.search(Some(ComponentKind::Cpu), "").len(), 24);
-        assert!(cat.search(None, "RYZEN").len() >= 5);
+        assert_eq!(cat.search(Some(ComponentKind::Cpu), "", false).len(), 24);
+        assert!(cat.search(None, "RYZEN", false).len() >= 5);
     }
 }

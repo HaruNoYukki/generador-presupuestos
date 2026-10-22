@@ -1,21 +1,24 @@
 // Vista de ajustes: tipo de cambio, catálogo (SQLite) e importación.
 import { api } from '../api';
 import { kindLabel } from '../meta';
-import { RateInfo, XlsxImportSummary } from '../types';
+import { OutOfStockHit, RateInfo, XlsxImportSummary } from '../types';
 import { el } from '../ui';
 
 // El último informe de importación vive fuera de la vista: `onChanged`
 // vuelve a renderizar el shell (y con él esta vista), y el informe debe
 // seguir visible hasta la siguiente importación.
 let lastXlsx: { summary: XlsxImportSummary; at: Date } | null = null;
+let lastCva: { hits: OutOfStockHit[]; at: Date; resumen: string } | null = null;
 
 /** Informe post-import: componentes de ensambles vigentes sin existencia. */
-function renderImportReport(summary: XlsxImportSummary): HTMLElement {
-  const hits = summary.out_of_stock;
+function renderImportReport(
+  hits: OutOfStockHit[],
+  meta: { supplier: string; zeroed: number },
+): HTMLElement {
   const head = el('div', { class: 'report-head' },
     el('h4', {}, 'Informe de existencias tras importar'),
     el('span', { class: 'muted small' },
-      `${summary.supplier} · ${summary.zeroed} SKU agotados por no venir en la lista`),
+      `${meta.supplier} · ${meta.zeroed} SKU agotados por no venir en la lista`),
   );
   if (hits.length === 0) {
     return el('div', { class: 'import-report ok' },
@@ -156,7 +159,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
             `Última importación ${lastXlsx.at.toLocaleString('es-MX')}: ${lastXlsx.summary.supplier} · ` +
             `${lastXlsx.summary.updated} actualizados, ${lastXlsx.summary.inserted} nuevos, ` +
             `${lastXlsx.summary.zeroed} agotados.`),
-          renderImportReport(lastXlsx.summary),
+          renderImportReport(lastXlsx.summary.out_of_stock, lastXlsx.summary),
         )
       : null;
 
@@ -197,35 +200,83 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
       }
     });
 
-    // Consultas XML de CVA: esqueleto listo; el formato del servicio se
-    // definirá con el negocio. Por ahora se guarda endpoint y clave.
+    // Feed XML de CVA: número de cliente (la auth es por IP) + importación
+    // de los grupos de ensamble. Horario del servicio: 19:01–08:59.
+    const ASSEMBLY_GROUPS = [
+      'gabinetes', 'monitores', 'teclado y mouse', 'mouse', 'procesadores',
+      'tarjeta madre', 'teclados', 'video', 'memorias', 'discos duros', 'energia',
+    ];
     const feedCfg = await api.getCvaFeedConfig().catch(() => null);
-    const feedEndpoint = el('input', {
+    const feedCliente = el('input', {
       class: 'input',
-      placeholder: 'URL del servicio (por definir)',
-      value: feedCfg?.endpoint ?? '',
-    }) as HTMLInputElement;
-    const feedKey = el('input', {
-      class: 'input',
-      placeholder: 'Clave de cliente que asigna CVA',
-      value: feedCfg?.client_key ?? '',
+      inputmode: 'numeric',
+      placeholder: 'Número de cliente (p. ej. 74247)',
+      value: feedCfg?.cliente ?? '',
     }) as HTMLInputElement;
     const feedMsg = el('p', { class: 'form-error' });
-    const feedSave = el('button', { class: 'btn btn-outline' }, 'Guardar configuración');
+    const feedSave = el('button', { class: 'btn btn-outline' }, 'Guardar número de cliente');
     feedSave.addEventListener('click', async () => {
       feedMsg.textContent = '';
       try {
-        await api.setCvaFeedConfig({
-          endpoint: feedEndpoint.value.trim(),
-          client_key: feedKey.value.trim(),
-        });
+        await api.setCvaFeedConfig({ cliente: feedCliente.value.trim() });
         feedMsg.className = 'ok-note';
-        feedMsg.textContent =
-          'Configuración guardada. La consulta XML se activará cuando se definan los detalles del servicio.';
+        feedMsg.textContent = 'Número de cliente guardado.';
       } catch (e) {
         feedMsg.textContent = String(e);
       }
     });
+
+    // Importación por grupos de ensamble
+    const groupChecks: { name: string; box: HTMLInputElement }[] = ASSEMBLY_GROUPS.map((g) => {
+      const box = el('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
+      return { name: g, box };
+    });
+    const marcaInput = el('input', {
+      class: 'input',
+      placeholder: 'Marca (opcional, p. ej. HP)',
+    }) as HTMLInputElement;
+    const cvaImportMsg = el('p', { class: 'form-error' });
+    const cvaImportBtn = el('button', { class: 'btn btn-primary' },
+      '⤓ Importar de CVA (grupos seleccionados)');
+    cvaImportBtn.addEventListener('click', async () => {
+      cvaImportMsg.textContent = '';
+      const grupos = groupChecks.filter((g) => g.box.checked).map((g) => g.name);
+      if (grupos.length === 0) {
+        cvaImportMsg.textContent = 'Selecciona al menos un grupo.';
+        return;
+      }
+      const isTauri = '__TAURI_INTERNALS__' in window;
+      if (!isTauri) {
+        cvaImportMsg.textContent = 'Importar del feed CVA solo está disponible en la aplicación de escritorio.';
+        return;
+      }
+      cvaImportBtn.disabled = true;
+      cvaImportMsg.className = '';
+      cvaImportMsg.textContent = 'Consultando el feed de CVA… (el servicio solo responde de 19:01 a 08:59)';
+      try {
+        const summary = await api.importCatalogCva(grupos, marcaInput.value.trim() || null);
+        const gruposTxt = summary.groups
+          .map(([g, n]) => `${g}: ${n}`)
+          .join(' · ');
+        const resumen =
+          `CVA: ${summary.updated} actualizados por SKU, ${summary.inserted} nuevos, ` +
+          `${summary.zeroed} agotados · total ${summary.total}.` +
+          (gruposTxt ? ` Descargados por grupo — ${gruposTxt}.` : '');
+        lastCva = { hits: summary.out_of_stock, at: new Date(), resumen };
+        await onChanged();
+        await render();
+      } catch (e) {
+        cvaImportMsg.textContent = String(e);
+      } finally {
+        cvaImportBtn.disabled = false;
+      }
+    });
+    const cvaReport = lastCva
+      ? el('div', {},
+          el('p', { class: 'ok-note small' }, `${lastCva.at.toLocaleString('es-MX')} — ${lastCva.resumen}`),
+          renderImportReport(lastCva.hits, { supplier: 'CVA', zeroed: 0 }),
+        )
+      : null;
 
     // Catálogos de atributos normalizados: agregar valores por separado
     const CATALOGS: { key: string; label: string }[] = [
@@ -282,76 +333,90 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
 
     await refreshCatalogList();
 
-    view.replaceChildren(
-      el('div', { class: 'settings-grid' },
-        el('div', { class: 'card' },
-          el('h3', {}, 'Tipo de cambio USD → MXP'),
-          el('p', { class: 'muted' }, info.exchange_rule),
-          el('div', { class: 'rate-rows' },
-            row('T.C de la lista', `${info.list_rate.pesos_per_dollar} (lista ${info.list_date})`),
-            row('T.C capturado', info.rate.pesos_per_dollar),
-            row('T.C efectivo aplicado', `${info.effective_rate.pesos_per_dollar} por dólar`),
-            row('Origen', info.is_overridden ? 'Capturado por el usuario' : 'Lista de precios'),
-          ),
-          el('div', { class: 'form-row' },
-            el('label', {}, 'Capturar otro T.C', input),
-          ),
-          msg,
-          el('div', { class: 'form-actions' }, save),
+    // Dos columnas balanceadas: inventario/imports a la izquierda (uso
+    // diario), configuración a la derecha.
+    const colInventario = el('div', { class: 'settings-col' },
+      el('div', { class: 'card' },
+        el('h3', {}, 'Catálogo e inventario'),
+        el('div', { class: 'rate-rows' },
+          row('Archivo fuente', info.source_file),
+          row('Fecha de la lista', info.list_date),
         ),
-        el('div', { class: 'card' },
-          el('h3', {}, 'Catálogo (SQLite)'),
-          el('div', { class: 'rate-rows' },
-            row('Archivo fuente', info.source_file),
-            row('Fecha de la lista', info.list_date),
-          ),
-          xlsxBtn,
-          xlsxMsg,
-          xlsxReport,
-          el('p', { class: 'muted' },
-            'Actualiza el catálogo directo desde el Excel del proveedor: se detecta ' +
-            'el formato por sus encabezados y la importación usa el SKU como clave ' +
-            '(los productos existentes se actualizan conservando su identidad; los ' +
-            'nuevos se agregan). Con arroba y CVA, los SKU que ya no vienen en la ' +
-            'lista quedan agotados (se conserva su último precio). Las correcciones ' +
-            'hechas a mano en el catálogo (p. ej. "incluye fuente") no se pisan. ' +
-            'El inventario que se considera para vender es A-CEN + AVE-2 + CEDIS.'),
-          el('div', { class: 'card' },
-            el('h3', {}, 'Catálogos del producto'),
-            el('p', { class: 'muted' },
-              'Valores permitidos en los formularios de alta. Agrega aquí los valores nuevos de cada catálogo; los imports de listas también los registran automáticamente.'),
-            el('div', { class: 'form-row' },
-              el('label', {}, 'Catálogo', catSel),
-            ),
-            valoresBox,
-            el('div', { class: 'form-row' },
-              el('label', {}, 'Nuevo valor', newValue),
-              catAdd,
-            ),
-            catMsg,
-          ),
-          el('div', { class: 'card' },
-            el('h3', {}, 'Títulos con IA (Z.ai)'),
-            el('p', { class: 'muted' },
-              'Los proveedores formatean las descripciones de manera distinta. Con una clave API de Z.ai normalizas los títulos en lotes de 100: cada corrida procesa solo los pendientes — los ya normalizados quedan excluidos y no se reenvían.'),
-            el('div', { class: 'form-row' }, el('label', {}, 'Clave API', zaiKey)),
-            zaiMsg,
-            el('div', { class: 'form-actions' }, zaiSave, zaiImprove),
-          ),
-          el('div', { class: 'card' },
-            el('h3', {}, 'Consultas CVA (XML)'),
-            el('p', { class: 'muted' },
-              'Estructura lista para consultar precio y existencia directamente al servicio de CVA; el formato del XML se definirá con el negocio. Puedes dejar ya guardados el endpoint y tu clave de cliente.'),
-            el('div', { class: 'form-row' }, el('label', {}, 'Endpoint', feedEndpoint)),
-            el('div', { class: 'form-row' }, el('label', {}, 'Clave de cliente', feedKey)),
-            feedMsg,
-            el('div', { class: 'form-actions' }, feedSave),
-          ),
-          el('div', { class: 'form-title' }, 'Avanzado'),
-          importBtn,
-          importMsg,
-        ),
+        xlsxBtn,
+        xlsxMsg,
+        xlsxReport,
+        el('p', { class: 'muted small' },
+          'UPSERT por SKU: los existentes se actualizan conservando su identidad; los nuevos se agregan. Con arroba y CVA, los SKU ausentes quedan agotados (último precio visible). Las correcciones manuales no se pisan. Vendible = A-CEN + AVE-2 + CEDIS.'),
       ),
+      el('div', { class: 'card' },
+        el('h3', {}, 'Feed XML de CVA'),
+        el('p', { class: 'muted small' },
+          'Importación directa del catálogo de CVA. Coloca tu número de cliente y recuerda dar de alta la IP de este equipo en el portal de CVA. El servicio solo responde de 19:01 a 08:59 h.'),
+        el('div', { class: 'form-row' }, el('label', {}, 'Número de cliente', feedCliente)),
+        feedMsg,
+        el('div', { class: 'form-actions' }, feedSave),
+        el('div', { class: 'form-title' }, 'Importar grupos de ensamble'),
+        el('p', { class: 'muted small' },
+          'Dentro de memorias y energía, lo que no es de ensamble (USB, flash, UPS…) se importa como tipo «otro»: vendible en venta individual, nunca en ensambles. Las promociones aplican como precio efectivo y quedan registradas.'),
+        el('div', { class: 'group-checks' },
+          ...groupChecks.map(({ name, box }) =>
+            el('label', { class: 'filter-check' }, box, ` ${name}`))),
+        el('div', { class: 'form-row' }, el('label', {}, 'Marca (opcional)', marcaInput)),
+        cvaImportMsg,
+        el('div', { class: 'form-actions' }, cvaImportBtn),
+        cvaReport,
+      ),
+      el('div', { class: 'card' },
+        el('h3', {}, 'Avanzado'),
+        el('p', { class: 'muted small' },
+          'Importar un catálogo JSON (mismo formato que catalog_seed.json). La base hace UPSERT por SKU.'),
+        importBtn,
+        importMsg,
+      ),
+    );
+
+    const colConfig = el('div', { class: 'settings-col' },
+      el('div', { class: 'card' },
+        el('h3', {}, 'Tipo de cambio USD → MXP'),
+        el('p', { class: 'muted small' }, info.exchange_rule),
+        el('div', { class: 'rate-rows' },
+          row('T.C de la lista', `${info.list_rate.pesos_per_dollar} (lista ${info.list_date})`),
+          row('T.C capturado', info.rate.pesos_per_dollar),
+          row('T.C efectivo aplicado', `${info.effective_rate.pesos_per_dollar} por dólar`),
+          row('Origen', info.is_overridden ? 'Capturado por el usuario' : 'Lista de precios'),
+        ),
+        el('div', { class: 'form-row' },
+          el('label', {}, 'Capturar otro T.C', input),
+        ),
+        msg,
+        el('div', { class: 'form-actions' }, save),
+      ),
+      el('div', { class: 'card' },
+        el('h3', {}, 'Catálogos del producto'),
+        el('p', { class: 'muted small' },
+          'Valores permitidos en los formularios de alta. Los imports de listas también registran automáticamente cualquier valor nuevo.'),
+        el('div', { class: 'form-row' },
+          el('label', {}, 'Catálogo', catSel),
+        ),
+        valoresBox,
+        el('div', { class: 'form-row' },
+          el('label', {}, 'Nuevo valor', newValue),
+          catAdd,
+        ),
+        catMsg,
+      ),
+      el('div', { class: 'card' },
+        el('h3', {}, 'Títulos con IA (Z.ai)'),
+        el('p', { class: 'muted small' },
+          'Normaliza los títulos del catálogo en lotes de 100: cada corrida procesa solo los pendientes; los ya normalizados y los editados a mano quedan excluidos.'),
+        el('div', { class: 'form-row' }, el('label', {}, 'Clave API', zaiKey)),
+        zaiMsg,
+        el('div', { class: 'form-actions' }, zaiSave, zaiImprove),
+      ),
+    );
+
+    view.replaceChildren(
+      el('div', { class: 'settings-grid' }, colInventario, colConfig),
     );
   }
 
