@@ -172,6 +172,8 @@ export interface CvaImportSummary {
   updated: number;
   inserted: number;
   zeroed: number;
+  /** Artículos omitidos por datos inválidos (p. ej. "Sin Descuento"). */
+  skipped: number;
   total: number;
   groups: [string, number][];
   out_of_stock: OutOfStockHit[];

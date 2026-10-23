@@ -64,6 +64,8 @@ pub struct CvaImportResult {
     /// SKUs del proveedor que ya no venían y quedaron agotados (solo
     /// import COMPLETO: `grupo=%`).
     pub zeroed: usize,
+    /// Artículos omitidos por datos inválidos (p. ej. precio no numérico).
+    pub skipped: usize,
     /// Artículos descargados por grupo pedido.
     pub groups: Vec<(String, usize)>,
     pub out_of_stock: Vec<OutOfStockHit>,
@@ -340,6 +342,7 @@ impl AppState {
         let mut promos: BTreeMap<String, Option<db::OfferPromoRow>> = BTreeMap::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut groups: Vec<(String, usize)> = Vec::new();
+        let mut skipped = 0usize;
 
         let mut collect = |grupo: Option<&str>| -> Result<(), String> {
             let items =
@@ -352,18 +355,18 @@ impl AppState {
                 if !seen.insert(item.codigo_fabricante.clone()) {
                     continue;
                 }
-                promos.insert(
-                    item.codigo_fabricante.clone(),
-                    item.promo.as_ref().map(|p| db::OfferPromoRow {
-                        clave: p.clave.clone(),
-                        descripcion: p.descripcion.clone(),
-                        vencimiento: p.vencimiento.clone(),
-                        precio_descuento: p.precio_descuento.clone(),
-                        moneda: p.moneda.clone(),
-                        disponible: p.disponible,
-                    }),
-                );
-                products.push(crate::cva_feed::to_parsed_product(&item)?);
+                // Un artículo con precio inválido se omite y se cuenta; no
+                // tumba toda la corrida.
+                match crate::cva_feed::to_parsed_product(&item) {
+                    Ok(parsed) => {
+                        promos.insert(item.codigo_fabricante.clone(), item.promo_row());
+                        products.push(parsed);
+                    }
+                    Err(e) => {
+                        skipped += 1;
+                        eprintln!("[CVA] omitido: {e}");
+                    }
+                }
             }
             Ok(())
         };
@@ -404,6 +407,7 @@ impl AppState {
             updated,
             inserted,
             zeroed,
+            skipped,
             groups,
             out_of_stock,
         })
@@ -1927,17 +1931,7 @@ mod tests {
         let mut components = Vec::new();
         let mut promos: BTreeMap<String, Option<db::OfferPromoRow>> = BTreeMap::new();
         for item in &items {
-            promos.insert(
-                item.codigo_fabricante.clone(),
-                item.promo.as_ref().map(|p| db::OfferPromoRow {
-                    clave: p.clave.clone(),
-                    descripcion: p.descripcion.clone(),
-                    vencimiento: p.vencimiento.clone(),
-                    precio_descuento: p.precio_descuento.clone(),
-                    moneda: p.moneda.clone(),
-                    disponible: p.disponible,
-                }),
-            );
+            promos.insert(item.codigo_fabricante.clone(), item.promo_row());
             components.push(crate::cva_feed::to_parsed_product(item).unwrap().into_component());
         }
         let (_, inserted, _) = state
@@ -1950,7 +1944,7 @@ mod tests {
                 Some(&promos),
             )
             .unwrap();
-        assert_eq!(inserted, 3);
+        assert_eq!(inserted, 4);
 
         // CPU: precio de promo como efectivo, sucursales, departamento mapeado.
         let cpu = state.find_by_sku("100-100000457BOX").unwrap();
@@ -1972,6 +1966,20 @@ mod tests {
         let usb = state.find_by_sku("USB-128").unwrap();
         assert_eq!(usb.kind, crate::domain::component::ComponentKind::Other);
         assert_eq!(usb.stock_individual_total, 50);
+
+        // RAM con «Sin Descuento»: precio de lista, sin promo.
+        let ram = state.find_by_sku("MEM-DDR4-8").unwrap();
+        assert_eq!(ram.price.amount, rust_decimal_macros::dec!(18.50));
+        assert!(!ram.on_promotion);
+        let n: i64 = state
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM offer_promos WHERE sku = 'MEM-DDR4-8'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "'Sin Descuento' no registra promo");
 
         // Promo persistida como entidad propia.
         let n: i64 = state

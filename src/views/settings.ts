@@ -260,7 +260,9 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
           .join(' · ');
         const resumen =
           `CVA: ${summary.updated} actualizados por SKU, ${summary.inserted} nuevos, ` +
-          `${summary.zeroed} agotados · total ${summary.total}.` +
+          `${summary.zeroed} agotados` +
+          (summary.skipped > 0 ? `, ${summary.skipped} omitidos por precio inválido` : '') +
+          ` · total ${summary.total}.` +
           (gruposTxt ? ` Descargados por grupo — ${gruposTxt}.` : '');
         lastCva = { hits: summary.out_of_stock, at: new Date(), resumen };
         await onChanged();

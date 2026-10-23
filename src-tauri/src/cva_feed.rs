@@ -152,6 +152,34 @@ impl CvaItem {
             .map(|(tag, q)| (Self::warehouse_key(tag), (*q).max(0) as u32))
             .collect()
     }
+
+    /// Precio de la promo SOLO si `PrecioDescuento` es un número válido.
+    /// El feed trae el texto «Sin Descuento» cuando no hay promoción (la
+    /// etiqueta puede aparecer aunque el resto de campos esté vacío).
+    pub fn promo_price(&self) -> Option<Decimal> {
+        let raw = self.promo.as_ref()?.precio_descuento.as_deref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        Decimal::from_str_exact(raw)
+            .ok()
+            .filter(|d| *d >= Decimal::ZERO)
+    }
+
+    /// Fila de promoción para `offer_promos`: solo si hay precio numérico
+    /// válido — sin él no hay promo real que registrar.
+    pub fn promo_row(&self) -> Option<db::OfferPromoRow> {
+        self.promo_price()?;
+        let p = self.promo.as_ref()?;
+        Some(db::OfferPromoRow {
+            clave: p.clave.clone(),
+            descripcion: p.descripcion.clone(),
+            vencimiento: p.vencimiento.clone(),
+            precio_descuento: p.precio_descuento.clone(),
+            moneda: p.moneda.clone(),
+            disponible: p.disponible,
+        })
+    }
 }
 
 /// Cotización para consultas puntuales (comando `cva_feed_query`).
@@ -445,17 +473,16 @@ pub fn to_parsed_product(item: &CvaItem) -> Result<ParsedProduct, String> {
         Some(k) if !is_non_assembly(item) => k,
         _ => ComponentKind::Other,
     };
-    let promo_price = item
-        .promo
-        .as_ref()
-        .and_then(|p| p.precio_descuento.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let price_raw = promo_price.unwrap_or(item.precio.trim());
-    let price_amount = Decimal::from_str_exact(price_raw)
-        .map_err(|_| format!("Precio inválido para {}: '{price_raw}'", item.codigo_fabricante))?;
+    // Precio efectivo = promo SOLO si PrecioDescuento es un número válido;
+    // el feed trae el texto «Sin Descuento» cuando no hay promoción.
+    let promo_amount = item.promo_price();
+    let price_amount = match promo_amount {
+        Some(p) => p,
+        None => Decimal::from_str_exact(item.precio.trim())
+            .map_err(|_| format!("Precio inválido para {}: '{}'", item.codigo_fabricante, item.precio.trim()))?,
+    };
     let currency = parse_moneda(
-        if promo_price.is_some() {
+        if promo_amount.is_some() {
             item.promo
                 .as_ref()
                 .and_then(|p| p.moneda.as_deref())
@@ -490,7 +517,7 @@ pub fn to_parsed_product(item: &CvaItem) -> Result<ParsedProduct, String> {
         department: dept.to_string(),
         price_amount,
         price_currency: currency,
-        on_promotion: item.promo.is_some(),
+        on_promotion: promo_amount.is_some(),
         specs,
         supplier: "cva".to_string(),
         offer_stocks: item.offer_stocks(),
@@ -597,6 +624,23 @@ pub(crate) const SAMPLE_FEED: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
             <RETAIL_CDMX>4</RETAIL_CDMX>
         </item>
         <item>
+            <clave>MEM-DD4</clave>
+            <codigo_fabricante>MEM-DDR4-8</codigo_fabricante>
+            <descripcion>MEMORIA RAM KINGSTON 8GB DDR4 3200 MHZ</descripcion>
+            <grupo>MEMORIAS</grupo>
+            <subgrupo>MEMORIA RAM</subgrupo>
+            <marca>KINGSTON</marca>
+            <precio>18.50</precio>
+            <moneda>Dolares</moneda>
+            <PrecioDescuento>Sin Descuento</PrecioDescuento>
+            <MonedaPrecioDescuento>Dolares</MonedaPrecioDescuento>
+            <ClavePromocion>999999</ClavePromocion>
+            <DescripcionPromocion>PROMO SIN PRECIO DEFINIDO</DescripcionPromocion>
+            <VencimientoPromocion>Por Cantidad</VencimientoPromocion>
+            <DisponibleEnPromocion>0</DisponibleEnPromocion>
+            <RETAIL_CDMX>15</RETAIL_CDMX>
+        </item>
+        <item>
             <clave>MEM-USB</clave>
             <codigo_fabricante>USB-128</codigo_fabricante>
             <descripcion>MEMORIA USB KINGSTON 128GB DATA TRAVELER</descripcion>
@@ -618,7 +662,7 @@ mod tests {
     #[test]
     fn parses_items_promos_and_branches() {
         let items = parse_xml(SAMPLE_FEED).unwrap();
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
 
         let cpu = &items[0];
         assert_eq!(cpu.codigo_fabricante, "100-100000457BOX");
@@ -661,8 +705,16 @@ mod tests {
         assert_eq!(psu.offer_stocks.get("retail_cdmx"), Some(&4));
 
         // Memoria USB: importada como «otro» (decisión 1).
-        let usb = to_parsed_product(&items[2]).unwrap();
+        let usb = to_parsed_product(&items[3]).unwrap();
         assert_eq!(usb.kind_override, Some(ComponentKind::Other));
+
+        // «Sin Descuento» en PrecioDescuento NO es promo: manda el precio
+        // de lista y no se registra fila de promoción.
+        let ram = to_parsed_product(&items[2]).unwrap();
+        assert_eq!(ram.kind_override, Some(ComponentKind::Ram));
+        assert_eq!(ram.price_amount, Decimal::from_str_exact("18.50").unwrap());
+        assert!(!ram.on_promotion);
+        assert!(items[3].promo_row().is_none());
     }
 
     #[test]

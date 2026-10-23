@@ -182,6 +182,8 @@ pub struct CvaImportSummary {
     pub updated: usize,
     pub inserted: usize,
     pub zeroed: usize,
+    /// Artículos omitidos por datos inválidos (p. ej. "Sin Descuento").
+    pub skipped: usize,
     pub total: usize,
     pub groups: Vec<(String, usize)>,
     pub out_of_stock: Vec<OutOfStockHit>,
@@ -203,6 +205,7 @@ pub fn import_catalog_cva(
         updated: r.updated,
         inserted: r.inserted,
         zeroed: r.zeroed,
+        skipped: r.skipped,
         total: s.catalog().components.len(),
         groups: r.groups,
         out_of_stock: r.out_of_stock,
