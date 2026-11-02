@@ -84,6 +84,8 @@ pub fn run() {
             commands::validate_assembly,
             commands::assembly_cost,
             commands::confirm_assembly,
+            commands::renew_assembly,
+            commands::refresh_assembly_feed,
             commands::assembly_profit,
             commands::cart_profit,
             commands::import_catalog,

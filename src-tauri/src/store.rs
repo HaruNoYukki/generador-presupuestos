@@ -71,9 +71,33 @@ pub struct CvaImportResult {
     pub out_of_stock: Vec<OutOfStockHit>,
 }
 
+/// Resultado de «Actualizar preensamble» para un SKU del feed CVA.
+#[derive(Debug, Clone, Serialize)]
+pub struct RefreshItem {
+    pub sku: String,
+    /// `false` si el feed no lo regresó o su precio era inválido:
+    /// conserva los valores actuales.
+    pub found: bool,
+    pub description: String,
+    /// Precio efectivo (promo si hay, si no lista).
+    pub price: String,
+    pub currency: String,
+    pub stock_ensamble: u32,
+    pub stock_individual: u32,
+    pub promo_description: Option<String>,
+}
+
+/// Reporte completo de la actualización de un preensamble.
+#[derive(Debug, Clone, Serialize)]
+pub struct AssemblyRefreshReport {
+    pub items: Vec<RefreshItem>,
+    pub skipped: usize,
+    pub not_found: usize,
+    pub out_of_stock: Vec<OutOfStockHit>,
+}
+
 /// Renglón de un ensamble vigente con su disponibilidad ANTES de importar.
-struct LiveItem {
-    component_id: Uuid,
+struct LiveItem {    component_id: Uuid,
     supplier: Option<String>,
     quantity: u32,
     available_before: u32,
@@ -671,6 +695,168 @@ impl AppState {
         let clone = asm.clone();
         self.persist_assembly(&clone);
         Ok(clone)
+    }
+
+    /// Renueva un PREENSAMBLE caducado: re-fecha `created_at` a ahora (la
+    /// vigencia se recalcula — día 1 del mes siguiente), limpia la
+    /// confirmación (los precios cambiaron: hay que re-confirmar) y
+    /// conserva folio y contenido. Vigentes y personalizados no se renuevan.
+    pub fn renew_assembly(&mut self, id: Uuid) -> Result<Assembly, String> {
+        let asm = self
+            .assemblies
+            .get_mut(&id)
+            .ok_or_else(|| "Ensamble no encontrado".to_string())?;
+        if asm.quote_type != QuoteType::Preensamble {
+            return Err("Solo los preensambles se renuevan; un personalizado caducado no se vende — genera uno nuevo.".into());
+        }
+        let today = chrono::Local::now().date_naive();
+        if asm.status(today) != assembly::QuoteStatus::Caducada {
+            return Err("El preensamble sigue vigente: no hace falta renovarlo.".into());
+        }
+        asm.created_at = chrono::Utc::now();
+        asm.confirmed_at = None;
+        asm.updated_at = chrono::Utc::now();
+        let clone = asm.clone();
+        self.persist_assembly(&clone);
+        Ok(clone)
+    }
+
+    /// SKUs del preensamble cuya oferta ELEGIDA es CVA (renglón fijado o,
+    /// si no, la mejor oferta), deduplicados en orden de aparición.
+    /// Los arroba los actualiza el XLSX y los pch/manual la aprobación.
+    pub fn assembly_cva_skus(&self, id: Uuid) -> Vec<String> {
+        let Some(asm) = self.assemblies.get(&id) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for &slot in Slot::ALL.iter() {
+            for item in asm.items(slot) {
+                let Some(c) = self.catalog.get_component(&item.component_id) else {
+                    continue;
+                };
+                let elegido = item
+                    .supplier
+                    .clone()
+                    .unwrap_or_else(|| c.supplier.clone());
+                if elegido == "cva"
+                    && c.offers.iter().any(|o| o.supplier == "cva")
+                    && seen.insert(c.sku.clone())
+                {
+                    out.push(c.sku.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Actualiza precios y existencias de los componentes CVA de un
+    /// preensamble consultando el feed XML SKU por SKU, y aplica los
+    /// cambios al catálogo. Parcial: NO barre existencias. Devuelve el
+    /// detalle por SKU + el informe de ensambles afectados.
+    pub fn refresh_assembly_feed(
+        &mut self,
+        id: Uuid,
+        marca: Option<&str>,
+    ) -> Result<AssemblyRefreshReport, String> {
+        let config = crate::cva_feed::get_config(&self.db).unwrap_or_default();
+        if !config.is_configured() {
+            return Err(
+                "Configura tu número de cliente de CVA en Ajustes (y da de alta tu IP en su portal)."
+                    .into(),
+            );
+        }
+        let skus = self.assembly_cva_skus(id);
+        if skus.is_empty() {
+            return Err("Este preensamble no tiene componentes de CVA que actualizar.".into());
+        }
+
+        let mut products: Vec<crate::suppliers::ParsedProduct> = Vec::new();
+        let mut promos: BTreeMap<String, Option<db::OfferPromoRow>> = BTreeMap::new();
+        let mut items: Vec<RefreshItem> = Vec::new();
+        let mut skipped = 0usize;
+        let mut not_found = 0usize;
+
+        for sku in &skus {
+            let feed = crate::cva_feed::fetch_items(&config.cliente, marca, None, None, Some(sku));
+            let feed = match feed {
+                Ok(f) => f,
+                Err(e) => return Err(e),
+            };
+            let Some(item) = feed
+                .iter()
+                .find(|i| i.codigo_fabricante.eq_ignore_ascii_case(sku))
+            else {
+                not_found += 1;
+                items.push(RefreshItem {
+                    sku: sku.clone(),
+                    found: false,
+                    description: String::new(),
+                    price: String::new(),
+                    currency: String::new(),
+                    stock_ensamble: 0,
+                    stock_individual: 0,
+                    promo_description: None,
+                });
+                continue;
+            };
+            match crate::cva_feed::to_parsed_product(item) {
+                Ok(parsed) => {
+                    promos.insert(sku.clone(), item.promo_row());
+                    items.push(RefreshItem {
+                        sku: item.codigo_fabricante.clone(),
+                        found: true,
+                        description: item.descripcion.clone(),
+                        price: parsed.price_amount.to_string(),
+                        currency: serde_json::to_value(parsed.price_currency)
+                            .ok()
+                            .and_then(|v| v.as_str().map(str::to_string))
+                            .unwrap_or_default(),
+                        stock_ensamble: parsed.stock_ensamble,
+                        stock_individual: parsed.stock_individual,
+                        promo_description: item
+                            .promo
+                            .as_ref()
+                            .and_then(|p| p.descripcion.clone()),
+                    });
+                    products.push(parsed);
+                }
+                Err(_) => {
+                    skipped += 1;
+                    items.push(RefreshItem {
+                        sku: sku.clone(),
+                        found: false,
+                        description: String::new(),
+                        price: String::new(),
+                        currency: String::new(),
+                        stock_ensamble: 0,
+                        stock_individual: 0,
+                        promo_description: None,
+                    });
+                }
+            }
+        }
+
+        let components: Vec<Component> = products
+            .into_iter()
+            .map(|p| p.into_component())
+            .collect();
+        let before = self.snapshot_live_items();
+        self.apply_import(
+            components,
+            None,
+            chrono::Local::now().date_naive().to_string(),
+            "Feed XML CVA (actualización de preensamble)".to_string(),
+            None,
+            Some(&promos),
+        )?;
+        let out_of_stock = self.out_of_stock_report(&before);
+        Ok(AssemblyRefreshReport {
+            items,
+            skipped,
+            not_found,
+            out_of_stock,
+        })
     }
 
     pub fn assign_quote_number(&mut self, id: Uuid) -> Result<String, String> {
@@ -1991,6 +2177,113 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Renovar un preensamble CADUCADO lo re-fecha (nueva vigencia), limpia
+    /// la confirmación y conserva contenido y folio; la fecha sobrevive el
+    /// upsert (regresión: el UPDATE no tocaba created_at).
+    #[test]
+    fn renew_assembly_redates_caducado() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let asm = state.create_assembly("Base Gamer".into(), QuoteType::Preensamble);
+        // Forzar caducidad: created_at en el pasado (día 10 → venció día 1).
+        let asm = {
+            let a = state.assemblies.get_mut(&asm.id).unwrap();
+            a.created_at = chrono::Utc::now() - chrono::Duration::days(30);
+            a.confirmed_at = Some(chrono::Utc::now());
+            let clone = a.clone();
+            state.persist_assembly(&clone);
+            clone
+        };
+        assert_eq!(asm.status(chrono::Local::now().date_naive()), assembly::QuoteStatus::Caducada);
+        let folio = asm.quote_number.clone();
+
+        let renewed = state.renew_assembly(asm.id).unwrap();
+        assert_eq!(renewed.quote_type, QuoteType::Preensamble);
+        assert_eq!(renewed.status(chrono::Local::now().date_naive()), assembly::QuoteStatus::Vigente);
+        assert!(renewed.confirmed_at.is_none(), "re-confirmar con precios nuevos");
+        assert_eq!(renewed.quote_number, folio, "el folio se conserva");
+        assert!(renewed.expiry() > chrono::Local::now().date_naive());
+
+        // La fecha nueva SOBREVIVE el persist+reload (created_at en el UPDATE).
+        let reloaded = AppState::load(Some(SEED), dir.clone());
+        let saved = reloaded.assembly(asm.id).unwrap();
+        assert_eq!(saved.status(chrono::Local::now().date_naive()), assembly::QuoteStatus::Vigente,
+            "created_at debe persistirse en el UPDATE");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Vigentes y personalizados NO se renuevan.
+    #[test]
+    fn renew_assembly_rejects_vigente_and_personalizado() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let vigente = state.create_assembly("Pre vigente".into(), QuoteType::Preensamble);
+        let err = state.renew_assembly(vigente.id).unwrap_err();
+        assert!(err.contains("vigente"), "{err}");
+
+        let pers = state.create_assembly("Pers".into(), QuoteType::Personalizado);
+        let err = state.renew_assembly(pers.id).unwrap_err();
+        assert!(err.contains("Solo los preensambles"), "{err}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Los SKUs a refrescar vía feed son los cuya oferta ELEGIDA es CVA
+    /// (renglón fijado o mejor oferta), deduplicados; arroba y pch no.
+    #[test]
+    fn assembly_cva_skus_resolves_chosen_supplier() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        // Un componente con ofertas arroba Y cva, fijado a cva en el renglón.
+        let cpu = state.find_by_sku("100-100001582WOF").unwrap();
+        let mut dual = cpu.clone();
+        dual.sku = "DUAL-SKU".into();
+        dual.id = Uuid::new_v4();
+        dual.offers.push(crate::domain::component::Offer {
+            supplier: "cva".into(),
+            price: dual.price.clone(),
+            on_promotion: false,
+            stocks: BTreeMap::new(),
+            stock_label: String::new(),
+            stock_ensamble: 2,
+            stock_individual: 2,
+            cd_only: false,
+            price_overridden: false,
+            stock_overridden: false,
+            list_price: None,
+            list_stock: None,
+        });
+        // Maestro primero (FK de product_offers → products.sku), luego oferta.
+        {
+            let mut comp = dual.clone();
+            comp.supplier = "arroba".into();
+            db::upsert_master(&state.db, &comp, true).unwrap();
+            use rusqlite::params;
+            let conn = &state.db;
+            conn.execute(
+                "INSERT OR IGNORE INTO product_offers (sku, supplier, price_amount, price_currency,
+                    on_promotion, cd_only, updated_at)
+                 VALUES ('DUAL-SKU', 'cva', '50.00', 'USD', 0, 0, datetime('now'))",
+                [],
+            ).unwrap();
+            let wid: i64 = conn.query_row("SELECT id FROM warehouses WHERE name='disp'", [], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO offer_stock (sku, supplier, warehouse_id, quantity) VALUES ('DUAL-SKU','cva',?1,2)",
+                params![wid],
+            ).unwrap();
+        }
+        state.reload_catalog().unwrap();
+
+        let asm = state.create_assembly("Mixto".into(), QuoteType::Preensamble);
+        let dual_final = state.find_by_sku("DUAL-SKU").unwrap();
+        let mb_arroba = state.find_by_sku("MB-AM4-TEST").unwrap();
+        state.set_assembly_item(asm.id, Slot::Cpu, dual_final.id, 1, Some("cva".into())).unwrap();
+        state.set_assembly_item(asm.id, Slot::Motherboard, mb_arroba.id, 1, None).unwrap();
+
+        let skus = state.assembly_cva_skus(asm.id);
+        assert_eq!(skus, vec!["DUAL-SKU".to_string()], "solo la oferta cva elegida");
         let _ = std::fs::remove_dir_all(dir);
     }
 

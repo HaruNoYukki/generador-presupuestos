@@ -149,6 +149,25 @@ export interface OutOfStockHit {
   assemblies: AffectedAssembly[];
 }
 
+/** Resultado por SKU del refresh del feed CVA en un preensamble. */
+export interface AssemblyRefreshItem {
+  sku: string;
+  found: boolean;
+  description: string;
+  price: string;
+  currency: string;
+  stock_ensamble: number;
+  stock_individual: number;
+  promo_description: string | null;
+}
+
+export interface AssemblyRefreshReport {
+  items: AssemblyRefreshItem[];
+  skipped: number;
+  not_found: number;
+  out_of_stock: OutOfStockHit[];
+}
+
 export interface XlsxImportSummary {
   updated: number;
   inserted: number;

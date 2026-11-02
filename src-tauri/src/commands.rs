@@ -690,6 +690,31 @@ pub fn confirm_assembly(
     s.confirm_assembly(assembly_id)
 }
 
+/// Renueva un preensamble caducado: re-fecha la vigencia y limpia la
+/// confirmación para obligar a re-confirmar con los precios nuevos.
+#[tauri::command]
+pub fn renew_assembly(
+    state: State<'_, SharedState>,
+    assembly_id: String,
+) -> CmdResult<Assembly> {
+    let mut s = state.0.lock().unwrap();
+    let assembly_id = parse_uuid(&assembly_id)?;
+    s.renew_assembly(assembly_id)
+}
+
+/// Actualiza precios/existencias de los componentes CVA del preensamble
+/// consultando el feed XML SKU por SKU.
+#[tauri::command]
+pub fn refresh_assembly_feed(
+    state: State<'_, SharedState>,
+    assembly_id: String,
+    marca: Option<String>,
+) -> CmdResult<crate::store::AssemblyRefreshReport> {
+    let mut s = state.0.lock().unwrap();
+    let assembly_id = parse_uuid(&assembly_id)?;
+    s.refresh_assembly_feed(assembly_id, marca.as_deref())
+}
+
 /// Tabla de ganancias por componente con el porcentaje dado y, opcionalmente,
 /// un precio objetivo (total con IVA) que ajusta la ganancia en partes iguales.
 #[tauri::command]

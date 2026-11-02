@@ -228,6 +228,16 @@ flowchart LR
 - **Títulos con IA** (opcional): guarda tu clave API de Z.ai en Ajustes y
   normaliza los títulos del catálogo en lotes de 100. Los ya normalizados
   quedan excluidos de las corridas siguientes.
+- **Actualizar preensamble** 🔄: botón en todo preensamble. Si está
+  **caducado** lo renueva (nueva vigencia; hay que re-confirmarlo); consulta
+  el **feed XML de CVA SKU por SKU** para actualizar precios y existencias
+  (Retail CDMX + CDM México para ensamble, todas las sucursales para
+  venta), pide **cargar el XLSX de arroba** cuando el preensamble usa
+  componentes arroba (puedes cancelarlo y continuar sin actualizar arroba)
+  y, si hay componentes **PCH/captura manual**, muestra una advertencia que
+  exige aprobar que verificaste su existencia a mano. Al final muestra el
+  resultado por SKU (precio efectivo con promo, existencias) y qué
+  ensambles vigentes quedaron afectados.
 
 ## 🗂️ Estructura
 

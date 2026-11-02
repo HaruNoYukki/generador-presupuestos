@@ -1,7 +1,7 @@
 // Vista de ensamble: constructor de equipos con validación en vivo.
 import { api } from '../api';
 import { SLOTS, SlotMeta, kindLabel } from '../meta';
-import { Assembly, AssemblySummary, ComponentDto, CostBreakdown, ValidationReport } from '../types';
+import { Assembly, AssemblyRefreshReport, AssemblySummary, ComponentDto, CostBreakdown, ValidationReport } from '../types';
 import { closeModal, el, modal, mxn } from '../ui';
 import { openProductForm } from './product_form';
 
@@ -504,6 +504,168 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     );
   }
 
+  // ------------------------------------------------------------------
+  // Actualizar preensamble: renovación + refresh CVA/arroba/PCH
+  // ------------------------------------------------------------------
+  function openRefreshWizard() {
+    if (!current) return;
+    const map = byId();
+    const buckets: { cva: string[]; arroba: string[]; pch: { desc: string; sku: string }[] } = {
+      cva: [], arroba: [], pch: [],
+    };
+    for (const slot of SLOTS) {
+      for (const item of current.slots[slot.id] ?? []) {
+        const c = map.get(item.component_id);
+        if (!c) continue;
+        const supplier = item.supplier ?? c.supplier;
+        const label = `${c.description} (${c.sku})`;
+        if (supplier === 'cva') buckets.cva.push(label);
+        else if (supplier === 'arroba') buckets.arroba.push(label);
+        else buckets.pch.push({ desc: c.description, sku: c.sku });
+      }
+    }
+    const summary = assemblies.find((a) => a.id === current!.id);
+    const caducada = summary?.status === 'caducada';
+    const id = current.id;
+
+    const statusLine = el('p', { class: 'muted' }, 'Listo para actualizar.');
+    const notice = el('p', { class: 'muted small' });
+    const errorBox = el('p', { class: 'form-error' });
+    const reportZone = el('div');
+
+    const pchBlock: HTMLElement[] = [];
+    let pchApproved = false;
+    if (buckets.pch.length > 0) {
+      const approval = el('input', { type: 'checkbox' }) as HTMLInputElement;
+      approval.addEventListener('change', () => {
+        pchApproved = approval.checked;
+        runBtn.disabled = !pchApproved;
+      });
+      pchBlock.push(
+        el('div', { class: 'pch-banner' },
+          el('strong', {}, '⚠ Componentes de PCH/captura manual: '),
+          el('p', { class: 'pch-line' }, 'No se pueden actualizar automáticamente. Verifica su existencia a mano y aprueba para continuar.'),
+          ...buckets.pch.map((p) => el('div', { class: 'pch-line' }, `${p.desc} — SKU: ${p.sku}`)),
+          el('label', { class: 'filter-check' },
+            approval, ' Verifiqué la existencia de estos componentes'),
+        ),
+      );
+    }
+
+    const runBtn = el('button', {
+      class: 'btn btn-primary',
+      disabled: buckets.pch.length > 0,
+    }, '🔄 Actualizar ahora') as HTMLButtonElement;
+
+    async function run() {
+      runBtn.disabled = true;
+      errorBox.textContent = '';
+      const avisos: string[] = [];
+      try {
+        if (caducada) {
+          statusLine.textContent = 'Renovando vigencia…';
+          await api.renewAssembly(id);
+        }
+        if (buckets.arroba.length > 0) {
+          statusLine.textContent = 'Pide el XLSX de arroba…';
+          try {
+            const isTauri = '__TAURI_INTERNALS__' in window;
+            if (!isTauri) throw new Error('solo escritorio');
+            const { open } = await import('@tauri-apps/plugin-dialog');
+            const path = await open({
+              multiple: false,
+              filters: [{ name: 'Lista de precios arroba (.xlsx)', extensions: ['xlsx', 'xlsm', 'xls'] }],
+            });
+            if (!path || Array.isArray(path)) {
+              avisos.push('arroba SIN actualizar (cancelaste el archivo).');
+            } else {
+              statusLine.textContent = 'Importando lista de arroba…';
+              await api.importCatalogXlsx(String(path));
+            }
+          } catch (e) {
+            avisos.push(`arroba SIN actualizar (${String(e)}).`);
+          }
+        }
+        if (buckets.cva.length > 0) {
+          statusLine.textContent = `Consultando el feed de CVA (${buckets.cva.length} SKU)…`;
+        }
+        const report = await api.refreshAssemblyFeed(id);
+        await loadAssemblies(id);
+        renderReport(report, avisos);
+      } catch (e) {
+        errorBox.textContent = String(e);
+        runBtn.disabled = false;
+        if (avisos.length) notice.textContent = avisos.join(' ');
+      }
+    }
+    runBtn.addEventListener('click', run);
+
+    function renderReport(report: AssemblyRefreshReport, avisos: string[]) {
+      statusLine.textContent = '';
+      const rows = report.items.map((r) =>
+        el('tr', {},
+          el('td', {}, r.sku),
+          el('td', {},
+            r.found
+              ? el('span', { class: 'chip chip-ok' }, 'actualizado')
+              : el('span', { class: 'chip chip-danger' }, 'no encontrado')),
+          el('td', { class: 'sub' }, r.description.slice(0, 48)),
+          el('td', { class: 'num strong' }, r.found ? `${r.price} ${r.currency}` : '—'),
+          el('td', { class: 'num' }, r.found ? `Ens. ${r.stock_ensamble} · Venta ${r.stock_individual}` : '—'),
+          el('td', { class: 'sub' }, r.promo_description ?? '')));
+      reportZone.replaceChildren(
+        el('h4', {}, 'Resultado'),
+        el('table', { class: 'catalog-table refresh-table' },
+          el('thead', {},
+            el('tr', {},
+              el('th', {}, 'SKU'), el('th', {}, 'Estado'), el('th', {}, 'Descripción'),
+              el('th', { class: 'num' }, 'Precio'), el('th', { class: 'num' }, 'Existencias'),
+              el('th', {}, 'Promo'))),
+          el('tbody', {}, ...rows)),
+        report.out_of_stock.length > 0
+          ? el('p', { class: 'form-error' },
+              `${report.out_of_stock.length} componente(s) quedaron sin existencia suficiente en ensambles vigentes.`)
+          : el('p', { class: 'ok-note' }, 'Ningún ensamble vigente quedó sin existencias.'),
+        avisos.length ? el('p', { class: 'muted small' }, avisos.join(' ')) : el('span'),
+        el('div', { class: 'form-actions' },
+          el('button', {
+            class: 'btn btn-primary',
+            onclick: async () => {
+              closeModal();
+              await loadAssemblies(id);
+            },
+          }, 'Listo')),
+      );
+      // El botón Listo queda al fondo: desplazar para verlo.
+      reportZone.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+
+    const body = el('div', { class: 'form' },
+      el('p', { class: 'muted small' },
+        caducada
+          ? 'El preensamble está CADUCADO: se renovará la vigencia (nueva fecha de expiración) y deberás re-confirmarlo.'
+          : 'El preensamble está vigente: solo se refrescan precios y existencias.'),
+      el('div', { class: 'rate-rows' },
+        el('div', { class: 'rate-row' },
+          el('span', { class: 'muted' }, '🌐 CVA (feed XML: precios y existencias)'),
+          el('span', { class: 'strong' }, `${buckets.cva.length}`)),
+        el('div', { class: 'rate-row' },
+          el('span', { class: 'muted' }, '📊 Arroba (se pedirá el XLSX)'),
+          el('span', { class: 'strong' }, `${buckets.arroba.length}`)),
+        el('div', { class: 'rate-row' },
+          el('span', { class: 'muted' }, '✍️ PCH / manual (aprobación manual)'),
+          el('span', { class: 'strong' }, `${buckets.pch.length}`)),
+      ),
+      ...pchBlock,
+      statusLine,
+      notice,
+      errorBox,
+      el('div', { class: 'form-actions' }, runBtn),
+      reportZone,
+    );
+    modal('Actualizar preensamble', body);
+  }
+
   function renderHeader() {
     const filtered = applyFilters(assemblies);
 
@@ -649,6 +811,11 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       await loadAssemblies(current.id);
     });
 
+    const refreshBtn = current?.quote_type === 'preensamble'
+      ? el('button', { class: 'btn btn-outline', title: 'Renueva la vigencia si está caducado y actualiza precios/existencias (CVA vía feed XML, arroba con el XLSX, PCH con tu aprobación)' }, '🔄 Actualizar')
+      : null;
+    if (refreshBtn) refreshBtn.addEventListener('click', openRefreshWizard);
+
     const renameBtn = el('button', { class: 'btn btn-outline' }, 'Renombrar');
     renameBtn.addEventListener('click', () => {
       if (!current) return;
@@ -682,7 +849,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         clearSearch,
       ),
       el('div', { class: 'toolbar' },
-        sel, confirmBtn, fabBtn, dupBtn, newBtn, renameBtn, delBtn,
+        sel, confirmBtn, fabBtn, dupBtn, refreshBtn, newBtn, renameBtn, delBtn,
       ),
     );
   }

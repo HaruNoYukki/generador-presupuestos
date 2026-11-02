@@ -1433,6 +1433,7 @@ pub fn upsert_assembly(conn: &Connection, a: &Assembly) -> rusqlite::Result<()> 
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
+            created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             confirmed_at = excluded.confirmed_at,
             quote_type = excluded.quote_type,

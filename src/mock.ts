@@ -697,6 +697,22 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
     }
     case 'delete_assembly':
       return state.assemblies.delete(String(args.id));
+    case 'renew_assembly': {
+      const asm = state.assemblies.get(String(args.assemblyId));
+      if (!asm) throw new Error('Ensamble no encontrado');
+      if ((asm.quote_type ?? 'personalizado') !== 'preensamble') {
+        throw new Error('Solo los preensambles se renuevan');
+      }
+      if (statusOf(asm) !== 'caducada') {
+        throw new Error('El preensamble sigue vigente: no hace falta renovarlo.');
+      }
+      asm.created_at = new Date().toISOString();
+      asm.confirmed_at = null;
+      asm.updated_at = asm.created_at;
+      return asm;
+    }
+    case 'refresh_assembly_feed':
+      return { items: [], skipped: 0, not_found: 0, out_of_stock: [] };
     case 'set_assembly_item': {
       const asm = state.assemblies.get(String(args.assemblyId));
       if (!asm) throw new Error('Ensamble no encontrado');

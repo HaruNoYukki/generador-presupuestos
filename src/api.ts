@@ -3,6 +3,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Assembly,
+  AssemblyRefreshReport,
   CartItem,
   AssemblySummary,
   CatalogOverview,
@@ -135,6 +136,17 @@ export const api = {
     call<Assembly>('rename_assembly', { id, name }),
 
   deleteAssembly: (id: string) => call<boolean>('delete_assembly', { id }),
+
+  /** Renueva un preensamble caducado: re-fecha la vigencia. */
+  renewAssembly: (id: string) => call<Assembly>('renew_assembly', { assemblyId: id }),
+
+  /** Actualiza precios/existencias CVA de los componentes del preensamble
+   *  consultando el feed XML SKU por SKU. */
+  refreshAssemblyFeed: (id: string, marca?: string | null) =>
+    call<AssemblyRefreshReport>('refresh_assembly_feed', {
+      assemblyId: id,
+      marca: marca ?? null,
+    }),
 
   setAssemblyItem: (
     assemblyId: string,
