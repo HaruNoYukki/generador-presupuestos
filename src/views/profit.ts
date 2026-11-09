@@ -205,7 +205,7 @@ export function createProfitView(deps: ProfitViewDeps): HTMLElement {
     if (!asm) {
       view.replaceChildren(
         el('div', { class: 'panel-muted' },
-          'Confirma un ensamble completo en la pestaña Ensamble para calcular ganancias.'),
+          'Confirma un ensamble completo en Ensamble (paso 1) para calcular ganancias.'),
       );
       return;
     }

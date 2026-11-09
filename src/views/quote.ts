@@ -294,7 +294,7 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
     if (!asm) {
       view.replaceChildren(
         el('div', { class: 'panel-muted' },
-          'Confirma un ensamble en la pestaña Ensamble para generar su cotización.'),
+          'Confirma un ensamble en Ensamble (paso 1) para generar su cotización.'),
       );
       return;
     }
@@ -333,7 +333,7 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
         numberBtn, pdfBtn, pngBtn,
         typeChip(selected()?.quote_type),
         el('span', { class: 'muted' },
-          `Ganancia ${deps.getParams().percent}% · se ajusta en la pestaña Ganancias`),
+          `Ganancia ${deps.getParams().percent}% · se ajusta en Ganancias (paso 2)`),
       ),
       quoteSheet(report, asm.name),
     );

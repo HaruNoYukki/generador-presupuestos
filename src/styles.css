@@ -14,6 +14,7 @@
   --warn: #e0a030;
   --info: #58a6ff;
   --radius: 10px;
+  --stepbar-h: 52px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -27,24 +28,65 @@ html, body {
   font-size: 14px;
 }
 
-#app { min-height: 100vh; display: flex; flex-direction: column; }
+#app { min-height: 100vh; display: flex; }
 
-/* ---------- Header ---------- */
-.app-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 20px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
+/* ---------- Barra lateral ---------- */
+.sidebar {
+  width: 220px;
+  flex-shrink: 0;
   position: sticky;
   top: 0;
-  z-index: 10;
+  height: 100vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 16px 12px;
+  background: var(--bg-2);
+  border-right: 1px solid var(--border);
 }
+.side-brand { font-size: 15px; margin: 0 6px; letter-spacing: 0.2px; line-height: 1.3; }
+.side-nav { display: flex; flex-direction: column; gap: 16px; }
+.side-section { display: flex; flex-direction: column; gap: 2px; }
+.side-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 10px 4px;
+}
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.side-item:hover { color: var(--text); background: var(--bg-3); }
+.side-item.active { color: var(--accent); background: rgba(240, 180, 41, 0.12); font-weight: 600; }
+/* Número de paso del flujo de cotización */
+.step-num {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+}
+.side-item.active .step-num { background: var(--accent); border-color: var(--accent); color: var(--bg); }
 
-.brand { display: flex; align-items: baseline; gap: 14px; }
-.brand h1 { font-size: 17px; margin: 0; letter-spacing: 0.2px; }
 .rate-chip {
   font-size: 12px;
   color: var(--accent-2);
@@ -53,19 +95,45 @@ html, body {
   padding: 2px 10px;
   border-radius: 999px;
 }
-
-.tabs { display: flex; gap: 4px; }
-.tab {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 14px;
-  padding: 8px 16px;
-  border-radius: 8px;
-  cursor: pointer;
+/* En la barra lateral el T.C va al pie, en bloque de dos líneas. */
+.side-rate {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  line-height: 1.35;
 }
-.tab:hover { color: var(--text); background: var(--bg-3); }
-.tab.active { color: var(--accent); background: rgba(240, 180, 41, 0.12); font-weight: 600; }
+.side-rate-date { color: var(--muted); font-size: 11px; }
+
+/* ---------- Contenido + barra de pasos del flujo ---------- */
+.app-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.step-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: var(--stepbar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.step-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.step-count { font-size: 12px; color: var(--muted); }
+.step-ctx { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
 
 .app-main { flex: 1; padding: 18px 20px; }
 
@@ -252,7 +320,8 @@ select.input { cursor: pointer; }
 
 .report-col {
   position: sticky;
-  top: 70px;
+  /* Debajo de la barra de pasos (también es sticky en top: 0). */
+  top: calc(var(--stepbar-h) + 12px);
 }
 .validation-panel {
   background: var(--bg-2);
@@ -596,13 +665,6 @@ select.input { cursor: pointer; }
 }
 
 /* ---------- Flujo: venta individual ---------- */
-.tab-sep {
-  width: 1px;
-  height: 22px;
-  background: var(--border);
-  margin: 0 6px;
-  align-self: center;
-}
 .cart-table td { vertical-align: middle; }
 .qty-stepper { display: inline-flex; align-items: center; gap: 6px; }
 .search-results { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow: auto; }

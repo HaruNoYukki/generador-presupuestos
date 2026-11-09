@@ -380,7 +380,7 @@ export function createSaleView(deps: SaleViewDeps): HTMLElement {
     if (!asm) {
       view.replaceChildren(
         el('div', { class: 'panel-muted' },
-          'Confirma un ensamble en la pestaña Ensamble para generar su nota de venta.'),
+          'Confirma un ensamble en Ensamble (paso 1) para generar su nota de venta.'),
       );
       return;
     }
