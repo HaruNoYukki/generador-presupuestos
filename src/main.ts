@@ -219,9 +219,12 @@ async function refreshComponents(): Promise<ComponentDto[]> {
   return state.components;
 }
 
+/** Recarga el T.C y la lista vigente. Solo los muestra la barra lateral:
+ * se repinta ella sola, sin recrear la vista activa (Ajustes perdería su
+ * estado: sección abierta, mensajes, catálogo elegido). */
 async function refreshOverview() {
   state.overview = await api.catalogOverview();
-  renderShell();
+  root.querySelector('.sidebar')?.replaceWith(renderSidebar());
 }
 
 function setTab(tab: Tab) {

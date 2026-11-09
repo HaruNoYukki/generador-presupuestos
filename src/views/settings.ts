@@ -4,9 +4,9 @@ import { kindLabel } from '../meta';
 import { OutOfStockHit, RateInfo, XlsxImportSummary } from '../types';
 import { el } from '../ui';
 
-// El último informe de importación vive fuera de la vista: `onChanged`
-// vuelve a renderizar el shell (y con él esta vista), y el informe debe
-// seguir visible hasta la siguiente importación.
+// El último informe de importación vive fuera de la vista: la vista se
+// recrea cada vez que se entra a Ajustes, y el informe debe seguir
+// visible hasta la siguiente importación.
 let lastXlsx: { summary: XlsxImportSummary; at: Date } | null = null;
 let lastCva: { hits: OutOfStockHit[]; at: Date; resumen: string } | null = null;
 
