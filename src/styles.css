@@ -178,6 +178,10 @@ select.input { cursor: pointer; }
 .btn-danger:hover { background: rgba(229, 83, 75, 0.12); }
 .btn-sm { padding: 4px 10px; font-size: 13px; }
 .btn-ghost { background: transparent; color: var(--muted); cursor: default; }
+/* Deshabilitado: atenuado y sin hover (antes se veía igual que activo). */
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:disabled:hover { border-color: var(--border); }
+.btn-primary:disabled:hover { background: var(--accent); border-color: var(--accent); }
 
 .icon-btn {
   background: transparent;
