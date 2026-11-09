@@ -12,6 +12,9 @@ export interface AssemblyViewDeps {
   onSelected?: (asm: Assembly | null) => void;
   /** Se llama tras confirmar un ensamble (para saltar a Ganancias). */
   onConfirmed?: () => void;
+  /** Cotización a mostrar al montar la vista. La vista se recrea en cada
+   * cambio de sección: sin esto se volvería a elegir la primera. */
+  initialAssemblyId?: string | null;
 }
 
 export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
@@ -40,6 +43,9 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       current = null;
       report = null;
       cost = null;
+      // Sin cotizaciones (p. ej. se borró la última): las vistas del flujo
+      // no deben seguir mostrando la eliminada.
+      deps.onSelected?.(null);
       render();
     }
   }
@@ -1003,7 +1009,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
 
   // El botón de vaciar slot necesita su listener; se cablea en renderSlot
   async function boot() {
-    await loadAssemblies();
+    await loadAssemblies(deps.initialAssemblyId ?? undefined);
   }
   boot();
 

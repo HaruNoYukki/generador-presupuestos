@@ -68,6 +68,7 @@ function renderShell() {
       createAssemblyView({
         components: state.components,
         refreshComponents,
+        initialAssemblyId: state.selectedAssembly?.id,
         onSelected: (asm) => {
           state.selectedAssembly = asm;
         },
