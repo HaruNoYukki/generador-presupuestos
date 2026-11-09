@@ -20,6 +20,9 @@
 
 * { box-sizing: border-box; }
 
+/* El atributo hidden gana aunque la clase del elemento fije display. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -497,17 +500,33 @@ select.input { cursor: pointer; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ---------- Ajustes ---------- */
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  max-width: 1100px;
-  align-items: start;
+/* Una sección a la vez, en una columna de lectura cómoda. */
+.settings-view { max-width: 760px; }
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
-@media (max-width: 920px) {
-  .settings-grid { grid-template-columns: 1fr; }
+.subnav-item {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
 }
-.settings-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.subnav-item:hover { color: var(--text); background: var(--bg-3); }
+.subnav-item.active { color: var(--accent); background: rgba(240, 180, 41, 0.12); font-weight: 600; }
+.settings-panel { display: flex; flex-direction: column; gap: 16px; }
+.settings-status { margin: 0; }
 .card {
   background: var(--bg-2);
   border: 1px solid var(--border);
