@@ -92,6 +92,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     let brandFilter = '';
     brandSel.addEventListener('change', () => {
       brandFilter = brandSel.value;
+      page = 1;
       drawList();
     });
 
@@ -103,6 +104,59 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       .filter((c) => !(c.kind === 'ram' && c.specs?.ram_form === 'SODIMM'))
       .sort((a, b) => parseFloat(a.price_mxp.amount) - parseFloat(b.price_mxp.amount));
 
+    // Paginación del picker: 20 renglones por página.
+    const PAGE_SIZE = 20;
+    let page = 1; // página actual; cualquier cambio de filtro regresa a la 1
+
+    // Un componente no puede usarse en ensamble si su mejor oferta es
+    // SOLO-CD o si se quedó sin existencia para ensamble.
+    function blockedForAssembly(c: ComponentDto): 'cd' | 'stock' | null {
+      if (c.cd_only_best === true) return 'cd';
+      if (c.stock_ensamble_total <= 0) return 'stock';
+      return null;
+    }
+
+    // Modo reemplazo: el slot ya contiene un componente que dejó de poder
+    // usarse (p. ej. una carga de inventario o la renovación lo agotó o lo
+    // volvió SOLO-CD). Se fija arriba como referencia "a reemplazar" y los
+    // candidatos se ordenan por cercanía de precio para facilitar elegir
+    // el sustituto.
+    let toReplace: ComponentDto | null = null;
+    let replaceQty = 1;
+    let replaceSupplier: string | null = null;
+    if (current) {
+      for (const it of current.slots[slot.id] ?? []) {
+        const c = deps.components.find((x) => x.id === it.component_id);
+        if (c && blockedForAssembly(c)) {
+          toReplace = c;
+          replaceQty = it.quantity;
+          replaceSupplier = it.supplier ?? null;
+          break;
+        }
+      }
+    }
+    const replaceBanner = toReplace
+      ? el('p', { class: 'replace-banner' },
+          `🔁 “${toReplace.description}” ya no puede usarse en ensamble. ` +
+          'La lista muestra solo componentes utilizables, ordenados por cercanía de precio.')
+      : null;
+
+    /** Pone `c` en el slot. En modo reemplazo es un intercambio: conserva
+     * la cantidad del componente a reemplazar (limitada a la existencia del
+     * sustituto) y retira el viejo solo después de agregar el nuevo, así un
+     * fallo al agregar (p. ej. sin existencia) deja el ensamble intacto. */
+    async function choose(c: ComponentDto, supplier?: string) {
+      if (!current) return;
+      const asmId = current.id;
+      const old = toReplace;
+      const qty = old ? Math.max(1, Math.min(replaceQty, availableFor(c, supplier))) : 1;
+      await mutate((async () => {
+        await api.setAssemblyItem(asmId, slot.id, c.id, qty, supplier);
+        if (old) await api.setAssemblyItem(asmId, slot.id, old.id, 0, replaceSupplier);
+      })());
+      closeModal();
+    }
+
     function drawList() {
       const q = search.value.trim().toUpperCase();
       const rows = comps.filter(
@@ -111,104 +165,151 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
             c.description.toUpperCase().includes(q) ||
             c.sku.toUpperCase().includes(q) ||
             c.brand.toUpperCase().includes(q)) &&
-          (brandFilter === '' || c.brand === brandFilter),
+          (brandFilter === '' || c.brand === brandFilter) &&
+          // Se ocultan los no seleccionables (sin existencia o SOLO-CD):
+          // la lista solo ofrece componentes utilizables en ensamble.
+          !blockedForAssembly(c),
       );
-      list.replaceChildren(
-        ...rows.slice(0, 60).map((c) => {
-          const item = existingQty(c.id);
-          // En ensambles solo pueden usarse productos con existencia de
-          // prioridad (arroba CEN/AVE-2/CEDIS, CVA Disp, PCH/manual a mano).
-          // Los SOLO-CD de CVA y los AGOTADOS se muestran bloqueados.
-          const cdOnly = c.cd_only_best === true;
-          const sinStock = c.stock_ensamble_total <= 0;
-          const noEnsamble = cdOnly || sinStock;
-          const supplierChip = el('span', { class: `chip chip-supplier supplier-${c.supplier || 'arroba'}` },
-            c.supplier === 'cva' ? 'CVA' : c.supplier === 'arroba' ? '@' : (c.supplier || 'manual').toUpperCase());
-          const blockChip = cdOnly
-            ? el('span', { class: 'chip chip-cd-only' }, 'SOLO CD · no ensamble')
-            : sinStock
-              ? el('span', { class: 'chip chip-danger' }, 'SIN EXISTENCIA')
-              : null;
-          const others = (c.offers ?? []).filter((o) => o.supplier !== c.supplier);
-          const chosenSupplier = item?.supplier ?? null;
-
-          const offerLines = (c.offers ?? []).map((o) => {
-            const oLabel = o.supplier === 'cva' ? 'CVA' : o.supplier === 'arroba' ? '@' : o.supplier.toUpperCase();
-            const elegido = chosenSupplier ? chosenSupplier === o.supplier : c.supplier === o.supplier;
-            const usable = !(o.cd_only && o.stock_ensamble === 0) && o.stock_ensamble > 0;
-            const useBtn = usable
-              ? el('button', { class: 'btn btn-sm btn-outline offer-use' }, elegido ? '✓ Usando' : 'Usar este')
-              : el('span', { class: 'chip chip-danger' }, o.stock_ensamble === 0 ? 'sin existencia' : 'solo CD');
-            if (usable && current) {
-              const currentId = current.id;
-              useBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                await mutate(api.setAssemblyItem(currentId, slot.id, c.id, 1, o.supplier));
-                closeModal();
-              });
-            }
-            return el('div', { class: 'offer-line' },
-              el('span', { class: `chip chip-supplier supplier-${o.supplier}` }, oLabel),
-              el('span', { class: 'strong' }, mxn(o.price.amount)),
-              el('span', { class: 'sub' }, o.stock_label),
-              useBtn);
-          });
-
-          const row = el('div', { class: `picker-row${item ? ' picked' : ''}${noEnsamble ? ' disabled' : ''}` },
-            el('div', { class: 'picker-desc' },
-              el('div', { class: 'desc' }, c.description),
-              el('div', { class: 'sub' },
-                [c.sku, c.brand, kindLabel(c.kind), c.condition === 'usado' ? 'USADO' : null,
-                 `disponible ensamble: ${c.stock_ensamble_total}`]
-                  .filter(Boolean)
-                  .join(' · ')),
-              // Opción de ver/cambiar proveedores aunque otro sea más barato
-              others.length > 0
-                ? el('button', { class: 'btn btn-sm btn-outline offer-toggle' },
-                    `Ver otros proveedores (${others.length})`)
-                : null,
-              el('div', { class: 'offers-box hidden' }, ...offerLines),
-            ),
-            el('div', { class: 'picker-side' },
-              el('div', { class: 'strong' }, mxn(c.price_mxp.amount), supplierChip),
-              el('div', { class: 'sub' }, money0(c)),
-              blockChip,
-              item
-                ? el('button', { class: 'btn btn-ghost btn-sm' }, `En ensamble (${item.qty})`)
-                : null,
-            ),
-          );
-          // Toggle de ofertas de otros proveedores
-          const toggle = row.querySelector('.offer-toggle');
-          if (toggle) {
-            toggle.addEventListener('click', (e) => {
-              e.stopPropagation();
-              row.querySelector('.offers-box')?.classList.toggle('hidden');
-            });
-          }
-          if (noEnsamble && !item) {
-            row.addEventListener('click', (e) => {
-              e.stopPropagation();
-            });
-          } else {
-            // Un componente ya en el ensamble siempre se puede quitar,
-            // aunque se haya agotado después de elegirlo.
-            row.addEventListener('click', async () => {
-              if (!current) return;
-              const currentQty = existingQty(c.id);
-              const next = slot.multiple ? (currentQty ? 0 : 1) : currentQty ? 0 : 1;
-              await mutate(
-                api.setAssemblyItem(current.id, slot.id, c.id, next),
-              );
-              closeModal();
-            });
-          }
-          return row;
-        }),
-      );
-      if (!rows.length) {
-        list.replaceChildren(el('p', { class: 'muted' }, 'Sin resultados.'));
+      // En modo reemplazo los candidatos se ordenan por cercanía de precio
+      // al componente a reemplazar (en MXN para comparar entre monedas).
+      if (toReplace) {
+        const base = parseFloat(toReplace.price_mxp.amount);
+        rows.sort(
+          (a, b) =>
+            Math.abs(parseFloat(a.price_mxp.amount) - base) -
+            Math.abs(parseFloat(b.price_mxp.amount) - base),
+        );
       }
+      // Paginación: 20 renglones por página (antes la lista se cortaba en 60).
+      const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+      if (page > pages) page = pages;
+      const pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+      const children: HTMLElement[] = [];
+      if (toReplace) children.push(replaceSourceRow(toReplace));
+      children.push(...pageRows.map(rowFor));
+      if (!rows.length) {
+        children.push(el('p', { class: 'muted' }, 'Sin resultados.'));
+      } else if (pages > 1) {
+        children.push(pagerEl(rows.length, pages));
+      }
+      list.replaceChildren(...children);
+    }
+
+    /** Renglón del componente a reemplazar: solo informativo, no clicable. */
+    function replaceSourceRow(c: ComponentDto): HTMLElement {
+      const motivo = blockedForAssembly(c) === 'cd'
+        ? 'sus ofertas quedaron SOLO-CD (no aptas para ensamble)'
+        : 'se quedó sin existencia para ensamble';
+      const row = el('div', { class: 'picker-row picker-replace-src' },
+        el('div', { class: 'picker-desc' },
+          el('div', { class: 'desc' }, c.description),
+          el('div', { class: 'sub' },
+            [c.sku, c.brand, kindLabel(c.kind), c.condition === 'usado' ? 'USADO' : null]
+              .filter(Boolean)
+              .join(' · ')),
+          el('div', { class: 'replace-note' }, `⚠ Componente a reemplazar: ${motivo}.`),
+        ),
+        el('div', { class: 'picker-side' },
+          el('div', { class: 'strong' }, mxn(c.price_mxp.amount)),
+          el('span', { class: 'chip chip-danger' }, 'A REEMPLAZAR'),
+        ),
+      );
+      row.addEventListener('click', (e) => e.stopPropagation());
+      return row;
+    }
+
+    /** Controles de paginación (solo cuando hay más de una página). */
+    function pagerEl(total: number, pages: number): HTMLElement {
+      const prev = el('button', {
+        class: 'icon-btn', title: 'Página anterior', disabled: page <= 1,
+      }, '‹');
+      const next = el('button', {
+        class: 'icon-btn', title: 'Página siguiente', disabled: page >= pages,
+      }, '›');
+      prev.addEventListener('click', () => {
+        if (page > 1) { page--; drawList(); list.scrollTop = 0; }
+      });
+      next.addEventListener('click', () => {
+        if (page < pages) { page++; drawList(); list.scrollTop = 0; }
+      });
+      return el('div', { class: 'picker-pager' },
+        prev,
+        el('span', { class: 'muted' },
+          `Página ${page} de ${pages} · ${total} resultado${total === 1 ? '' : 's'}`),
+        next);
+    }
+
+    /** Renglón seleccionable de un componente del catálogo. */
+    function rowFor(c: ComponentDto) {
+      const item = existingQty(c.id);
+      const supplierChip = el('span', { class: `chip chip-supplier supplier-${c.supplier || 'arroba'}` },
+        c.supplier === 'cva' ? 'CVA' : c.supplier === 'arroba' ? '@' : (c.supplier || 'manual').toUpperCase());
+      const others = (c.offers ?? []).filter((o) => o.supplier !== c.supplier);
+      const chosenSupplier = item?.supplier ?? null;
+
+      const offerLines = (c.offers ?? []).map((o) => {
+        const oLabel = o.supplier === 'cva' ? 'CVA' : o.supplier === 'arroba' ? '@' : o.supplier.toUpperCase();
+        const elegido = chosenSupplier ? chosenSupplier === o.supplier : c.supplier === o.supplier;
+        const usable = !(o.cd_only && o.stock_ensamble === 0) && o.stock_ensamble > 0;
+        const useBtn = usable
+          ? el('button', { class: 'btn btn-sm btn-outline offer-use' }, elegido ? '✓ Usando' : 'Usar este')
+          : el('span', { class: 'chip chip-danger' }, o.stock_ensamble === 0 ? 'sin existencia' : 'solo CD');
+        if (usable && current) {
+          useBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await choose(c, o.supplier);
+          });
+        }
+        return el('div', { class: 'offer-line' },
+          el('span', { class: `chip chip-supplier supplier-${o.supplier}` }, oLabel),
+          el('span', { class: 'strong' }, mxn(o.price.amount)),
+          el('span', { class: 'sub' }, o.stock_label),
+          useBtn);
+      });
+
+      const row = el('div', { class: `picker-row${item ? ' picked' : ''}` },
+        el('div', { class: 'picker-desc' },
+          el('div', { class: 'desc' }, c.description),
+          el('div', { class: 'sub' },
+            [c.sku, c.brand, kindLabel(c.kind), c.condition === 'usado' ? 'USADO' : null,
+             `disponible ensamble: ${c.stock_ensamble_total}`]
+              .filter(Boolean)
+              .join(' · ')),
+          // Opción de ver/cambiar proveedores aunque otro sea más barato
+          others.length > 0
+            ? el('button', { class: 'btn btn-sm btn-outline offer-toggle' },
+                `Ver otros proveedores (${others.length})`)
+            : null,
+          el('div', { class: 'offers-box hidden' }, ...offerLines),
+        ),
+        el('div', { class: 'picker-side' },
+          el('div', { class: 'strong' }, mxn(c.price_mxp.amount), supplierChip),
+          el('div', { class: 'sub' }, money0(c)),
+          item
+            ? el('button', { class: 'btn btn-ghost btn-sm' }, `En ensamble (${item.qty})`)
+            : null,
+        ),
+      );
+      // Toggle de ofertas de otros proveedores
+      const toggle = row.querySelector('.offer-toggle');
+      if (toggle) {
+        toggle.addEventListener('click', (e) => {
+          e.stopPropagation();
+          row.querySelector('.offers-box')?.classList.toggle('hidden');
+        });
+      }
+      // Clic: agrega el componente (o lo intercambia en modo reemplazo);
+      // si ya está en el ensamble, lo quita.
+      row.addEventListener('click', async () => {
+        if (!current) return;
+        if (existingQty(c.id)) {
+          await mutate(api.setAssemblyItem(current.id, slot.id, c.id, 0));
+          closeModal();
+        } else {
+          await choose(c);
+        }
+      });
+      return row;
     }
 
     function existingQty(id: string): { qty: number; supplier?: string | null } | null {
@@ -222,16 +323,21 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       return c.price.currency === 'USD' ? `US$${c.price.amount}` : '';
     }
 
+    // Cualquier cambio de filtro regresa a la página 1.
+    const resetPageAndDraw = () => {
+      page = 1;
+      drawList();
+    };
     // Botón para limpiar la búsqueda: algunos entornos no disparan 'input'
     // al vaciar el campo, y el usuario necesita volver a la lista completa.
     const clearBtn = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, '✕');
     clearBtn.addEventListener('click', () => {
       search.value = '';
-      drawList();
+      resetPageAndDraw();
       search.focus();
     });
-    search.addEventListener('input', drawList);
-    search.addEventListener('change', drawList);
+    search.addEventListener('input', resetPageAndDraw);
+    search.addEventListener('change', resetPageAndDraw);
 
     // Alta de productos desde el propio picker (p. ej. captura manual de
     // proveedores sin Excel como PCH). Al guardar se auto-selecciona.
@@ -259,6 +365,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         el('div', { class: 'picker-search' }, search, clearBtn),
         el('div', { class: 'toolbar' }, el('span', { class: 'muted' }, 'Marca:'), brandSel),
         el('div', { class: 'toolbar' }, addNewBtn),
+        replaceBanner,
         list),
     );
   }

@@ -350,6 +350,39 @@ select.input { cursor: pointer; }
 .picker-desc { flex: 1; min-width: 0; }
 .picker-side { text-align: right; flex-shrink: 0; }
 
+/* Paginación del picker (20 renglones por página). */
+.picker-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 4px 2px;
+}
+.picker-pager .muted { font-size: 12.5px; }
+
+/* Componente a reemplazar (modo reemplazo tras carga de inventario o
+   renovación): fijado arriba de la lista, informativo, con nota. */
+.picker-row.picker-replace-src {
+  border: 1px dashed rgba(240, 180, 41, 0.65);
+  background: rgba(240, 180, 41, 0.10);
+  cursor: default;
+}
+.picker-row.picker-replace-src:hover { border-color: rgba(240, 180, 41, 0.65); }
+.replace-note {
+  font-size: 12.5px;
+  color: #f0b429;
+  margin-top: 4px;
+  font-weight: 600;
+}
+.replace-banner {
+  border: 1px solid rgba(240, 180, 41, 0.55);
+  background: rgba(240, 180, 41, 0.10);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
 /* ---------- Modales ---------- */
 .modal-overlay {
   position: fixed;
