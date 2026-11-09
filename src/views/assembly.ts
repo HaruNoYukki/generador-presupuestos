@@ -17,8 +17,8 @@ export interface AssemblyViewDeps {
 export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
   const view = el('section', { class: 'view assembly-view' });
   let assemblies: AssemblySummary[] = [];
-  // Filtros de cotizaciones: preensambles vigentes y búsqueda por folio.
-  let onlyVigentePreensambles = false;
+  // Búsqueda de cotizaciones por folio (el selector ya agrupa por tipo y
+  // vigencia, así que no hace falta otro filtro).
   let searchNumber = '';
   let current: Assembly | null = null;
   let report: ValidationReport | null = null;
@@ -538,17 +538,19 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     caducada: 'Caducada',
   };
 
+  // Grupos del selector: tipo × vigencia. "Vigente" = no caducada (incluye
+  // en fabricación, que no caduca), igual que el backend al emitir notas.
+  const SELECTOR_GROUPS: { label: string; match: (a: AssemblySummary) => boolean }[] = [
+    { label: 'Preensambles vigentes', match: (a) => a.quote_type === 'preensamble' && a.status !== 'caducada' },
+    { label: 'Preensambles no vigentes', match: (a) => a.quote_type === 'preensamble' && a.status === 'caducada' },
+    { label: 'Personalizados vigentes', match: (a) => a.quote_type === 'personalizado' && a.status !== 'caducada' },
+    { label: 'Personalizados no vigentes', match: (a) => a.quote_type === 'personalizado' && a.status === 'caducada' },
+  ];
+
   function applyFilters(list: AssemblySummary[]): AssemblySummary[] {
-    return list.filter((a) => {
-      if (onlyVigentePreensambles && !(a.quote_type === 'preensamble' && a.status === 'vigente')) {
-        return false;
-      }
-      if (searchNumber.trim() !== '') {
-        const q = searchNumber.trim().replace('#', '');
-        if (!(a.quote_number ?? '').includes(q)) return false;
-      }
-      return true;
-    });
+    const q = searchNumber.trim().replace('#', '');
+    if (q === '') return list;
+    return list.filter((a) => (a.quote_number ?? '').includes(q));
   }
 
   /** Advertencia de productos PCH cuando el ensamble está en fabricación:
@@ -776,13 +778,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
   function renderHeader() {
     const filtered = applyFilters(assemblies);
 
-    // Filtros: preensambles vigentes + búsqueda por número de cotización
-    const vigenteCheck = el('input', { type: 'checkbox' }) as HTMLInputElement;
-    vigenteCheck.checked = onlyVigentePreensambles;
-    vigenteCheck.addEventListener('change', () => {
-      onlyVigentePreensambles = vigenteCheck.checked;
-      render();
-    });
+    // Búsqueda por número de cotización
     const numberSearch = el('input', {
       class: 'input',
       placeholder: 'Buscar por # de cotización…',
@@ -806,24 +802,27 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     });
 
     const sel = el('select', { class: 'input' }) as HTMLSelectElement;
+    // El grupo ya dice el tipo y la vigencia: la opción no los repite.
+    const optionFor = (a: AssemblySummary) =>
+      el('option', { value: a.id },
+        `${a.quote_number ? `#${a.quote_number} · ` : ''}${a.name} ` +
+        `[${STATUS_LABELS[a.status]}]` +
+        (a.confirmed ? ' ✓' : a.is_valid ? '' : ` (${a.missing_count} pendientes)`) +
+        ` · vence ${a.expiry_date}`);
     function fillSelector(list: AssemblySummary[]) {
       sel.replaceChildren();
-      for (const a of list) {
-        const tipo = a.quote_type === 'preensamble' ? 'Preensamble' : 'Personalizado';
-        const opt = el('option', { value: a.id },
-          `${tipo} · ${a.quote_number ? `#${a.quote_number} · ` : ''}${a.name} ` +
-          `[${STATUS_LABELS[a.status]}]` +
-          (a.confirmed ? ' ✓' : a.is_valid ? '' : ` (${a.missing_count} pendientes)`) +
-          ` · vence ${a.expiry_date}`);
-        sel.append(opt);
+      for (const g of SELECTOR_GROUPS) {
+        const items = list.filter(g.match);
+        if (items.length === 0) continue;
+        sel.append(el('optgroup', { label: g.label }, ...items.map(optionFor)));
       }
-      // Si el ensamble en edición quedó fuera del filtro, se muestra al
-      // final marcado, para que las acciones no operen a escondidas.
+      // Si la cotización en edición quedó fuera de la búsqueda, se muestra
+      // aparte, para que las acciones no operen a escondidas.
       if (current && !list.some((a) => a.id === current!.id)) {
         const hidden = assemblies.find((a) => a.id === current!.id);
         if (hidden) {
-          sel.append(el('option', { value: hidden.id },
-            `— (fuera del filtro) ${hidden.name} [${STATUS_LABELS[hidden.status]}]`));
+          const tipo = hidden.quote_type === 'preensamble' ? 'Preensamble' : 'Personalizado';
+          sel.append(el('optgroup', { label: `Fuera de la búsqueda · ${tipo}` }, optionFor(hidden)));
         }
       }
       if (current) sel.value = current.id;
@@ -951,7 +950,6 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       current ? renderTypeBanner() : null,
       current?.in_fabrication ? renderPchWarning() : null,
       el('div', { class: 'toolbar filter-bar' },
-        el('label', { class: 'filter-check' }, vigenteCheck, ' Solo preensambles vigentes'),
         numberSearch,
         clearSearch,
       ),
