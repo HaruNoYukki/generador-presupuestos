@@ -10,6 +10,7 @@ import { createSaleDirectView } from './views/sale_direct';
 import { createSettingsView } from './views/settings';
 import { el } from './ui';
 import { ChevronLeft, ChevronRight, icon } from './icons';
+import markUrl from './assets/nykniu-mark.png';
 import type { CartItem, CatalogOverview, ComponentDto } from './types';
 
 type Tab = 'ensamble' | 'ganancias' | 'cotizacion' | 'venta' | 'directa' | 'catalogo' | 'ajustes';
@@ -60,12 +61,19 @@ function renderShell() {
   );
 }
 
-/** Barra lateral: marca, secciones (flujo de cotización numerado, ventas y
- * administración) y, al pie, el tipo de cambio vigente. */
+/** Barra lateral: lockup de marca, secciones (flujo de cotización numerado,
+ * ventas y administración) y, al pie, el tipo de cambio vigente. */
 function renderSidebar(): HTMLElement {
   const overview = state.overview;
   return el('aside', { class: 'sidebar' },
-    el('h1', { class: 'side-brand' }, 'Generador de Presupuestos'),
+    // Lockup canónico del manual (§1.1): gato + NYKNIU + Just Incredible.
+    el('div', { class: 'brand-lockup' },
+      el('img', { class: 'brand-mark', src: markUrl, alt: 'Logo Nykniu', width: '48', height: '48' }),
+      el('div', { class: 'brand-text' },
+        el('span', { class: 'brand-wordmark' }, 'Nykniu'),
+        el('span', { class: 'brand-tagline' }, 'Just Incredible'),
+      ),
+    ),
     el('nav', { class: 'side-nav' },
       ...SECTIONS.map((section) =>
         el('div', { class: 'side-section' },
