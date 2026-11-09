@@ -10,8 +10,9 @@ import logoUrl from '../assets/nykniu-logo.png';
 export interface QuoteViewDeps {
   getSelectedAssembly: () => Assembly | null;
   getParams: () => { percent: string; target: string };
-  /** Refresca el shell (el folio vive en el ensamble). */
-  onChanged?: () => void;
+  /** Vuelve a leer la cotización seleccionada tras asignarle folio (el
+   * folio vive en el ensamble y la selección del flujo es una copia). */
+  onChanged?: () => void | Promise<void>;
 }
 
 /** Etiquetas de tipo tal como aparecen en la cotización NYKNIU. */
@@ -316,8 +317,10 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
       if (!asm) return;
       try {
         await api.assignQuoteNumber(asm.id);
+        // Primero se refresca la selección y luego se repinta: load() lee
+        // el folio de getSelectedAssembly().
+        await deps.onChanged?.();
         await load();
-        deps.onChanged?.();
       } catch (e) {
         flash(String(e));
       }

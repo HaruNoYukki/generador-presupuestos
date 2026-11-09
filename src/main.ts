@@ -165,6 +165,14 @@ function renderContent(): HTMLElement {
       createQuoteView({
         getSelectedAssembly: () => state.selectedAssembly,
         getParams: () => state.quoteParams,
+        // Al asignar folio se vuelve a leer la cotización: así la hoja, la
+        // barra de pasos y la nota de venta usan el folio nuevo al instante.
+        onChanged: async () => {
+          const id = state.selectedAssembly?.id;
+          if (!id) return;
+          state.selectedAssembly = await api.getAssembly(id);
+          paintStepContext();
+        },
       }),
     );
   } else if (state.tab === 'venta') {
