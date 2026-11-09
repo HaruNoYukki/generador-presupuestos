@@ -1,21 +1,121 @@
-/* Generador de Presupuestos — tema oscuro con acento dorado */
+/* Generador de Presupuestos — sistema visual de marca Nykniu.
+   Fuente: Manual de Marca B2C (valores de globals.css del storefront),
+   portado a CSS plano. Tema oscuro permanente. Reglas de la casa:
+   - Todo valor de diseño vive una sola vez aquí, como token.
+   - Púrpura = chrome (navegación, botones); fucsia = interacción
+     (foco, selección). Nunca los dos glows en el mismo elemento.
+   - Las reglas se escriben sobre CLASES, nunca sobre elementos sueltos:
+     html2canvas copia los estilos computados al exportar las hojas de
+     cotización y nota de venta, y una regla global se colaría al PDF. */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('./assets/fonts/Geist-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('./assets/fonts/GeistMono-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
 
 :root {
-  --bg: #101418;
-  --bg-2: #171d24;
-  --bg-3: #1f2730;
-  --border: #2b3542;
-  --text: #e8ecf1;
-  --muted: #8d99a8;
-  --accent: #f0b429;
-  --accent-2: #ffd66b;
-  --ok: #3fb27f;
-  --bad: #e5534b;
-  --warn: #e0a030;
-  --info: #58a6ff;
-  --radius: 10px;
+  /* Paleta extendida en canales RGB: permite alpha con
+     rgb(var(--c-…) / .5). Solo los pasos en uso. */
+  --c-slate-300: 203 213 225;
+  --c-slate-400: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-slate-600: 71 85 105;
+  --c-slate-700: 51 65 85;
+  --c-slate-800: 30 41 59;
+  --c-slate-900: 15 23 42;
+  --c-slate-950: 2 6 23;
+  --c-blue-300: 147 197 253;
+  --c-blue-400: 96 165 250;
+  --c-blue-500: 59 130 246;
+  --c-blue-600: 37 99 235;
+  --c-blue-900: 30 58 138;
+  --c-purple-300: 216 180 254;
+  --c-purple-400: 192 132 252;
+  --c-purple-500: 168 85 247;
+  --c-purple-600: 147 51 234;
+  --c-purple-900: 88 28 135;
+  --c-fuchsia-400: 232 121 249;
+  --c-fuchsia-500: 217 70 239;
+  --c-fuchsia-600: 192 38 211;
+  --c-pink-400: 244 114 182;
+  --c-pink-500: 236 72 153;
+  --c-pink-600: 219 39 119;
+  --c-emerald-300: 110 231 183;
+  --c-emerald-400: 52 211 153;
+  --c-emerald-900: 6 78 59;
+  --c-orange-400: 251 146 60;
+  --c-orange-950: 67 20 7;
+  --c-red-400: 248 113 113;
+  --c-red-900: 127 29 29;
+
+  /* Superficies */
+  --background: rgb(var(--c-slate-950));
+  --card: rgb(var(--c-slate-900));
+  --secondary: rgb(var(--c-slate-800));
+  /* Texto: blanco para titulares y énfasis, slate-300 para el cuerpo */
+  --foreground: #ffffff;
+  --text: rgb(var(--c-slate-300));
+  --muted-foreground: rgb(var(--c-slate-400));
+  /* Bordes: slate-800 en cards y filas, slate-700 en inputs y botones */
+  --border: rgb(var(--c-slate-800));
+  --input: rgb(var(--c-slate-700));
+  /* Territorios de acento (manual §3.4) */
+  --chrome: rgb(var(--c-purple-400));
+  --interact: rgb(var(--c-fuchsia-400));
+  /* Semánticos */
+  --success: rgb(var(--c-emerald-400));
+  --destructive: rgb(var(--c-red-400));
+  --warning: rgb(var(--c-orange-400));
+  --info: rgb(var(--c-blue-400));
+
+  /* Gradientes canónicos (manual §3.3) */
+  --grad-title: linear-gradient(to right, rgb(var(--c-blue-400)), rgb(var(--c-purple-500)), rgb(var(--c-pink-500)));
+  --grad-action: linear-gradient(to right, rgb(var(--c-blue-600)), rgb(var(--c-purple-600)), rgb(var(--c-pink-600)));
+  --grad-action-hover: linear-gradient(to right, rgb(var(--c-blue-500)), rgb(var(--c-purple-500)), rgb(var(--c-pink-500)));
+  --grad-eyebrow: linear-gradient(to right, rgb(var(--c-blue-400)), rgb(var(--c-purple-400)));
+
+  /* Elevación: glows en lugar de sombras (manual §8) */
+  --glow-primary: 0 0 20px rgb(var(--c-purple-500) / 0.2);
+  --glow-primary-hover: 0 0 30px rgb(var(--c-purple-500) / 0.4);
+  --glow-container: 0 0 15px rgb(var(--c-purple-500) / 0.1);
+  --glow-selection: 0 0 15px rgb(var(--c-fuchsia-500) / 0.3);
+
+  /* Forma (manual §8): botón e input = xl; card y panel = 2xl */
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+
+  /* Tipografía (manual §4) */
+  --font-sans: 'Geist', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --tracking-tight: -0.025em;
+  --tracking-wider: 0.05em;
+  --tracking-widest: 0.1em;
+  --tracking-eyebrow: 0.2em;
+
   --stepbar-h: 52px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+  /* Compatibilidad temporal: los nombres anteriores apuntan a los tokens
+     de marca mientras se migran los componentes. */
+  --bg: var(--background);
+  --bg-2: var(--card);
+  --bg-3: var(--secondary);
+  --muted: var(--muted-foreground);
+  --accent: rgb(var(--c-purple-500));
+  --accent-2: rgb(var(--c-purple-300));
+  --ok: var(--success);
+  --bad: var(--destructive);
+  --warn: var(--warning);
+  --radius: 10px;
 }
 
 * { box-sizing: border-box; }
@@ -26,12 +126,51 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background: var(--background);
   color: var(--text);
+  font-family: var(--font-sans);
   font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+/* WebKit no hereda la fuente en controles de formulario. Las hojas de
+   cotización/nota no contienen controles: esta regla no les llega. */
+button, input, select, textarea { font-family: inherit; }
+::selection { background: rgb(var(--c-purple-500) / 0.3); }
+
+/* Fondo ambiental (manual §3.5): rejilla de puntos + tres halos fijos y
+   desenfocados detrás de todo el contenido. Vive en index.html, fuera del
+   shell, para no recrear los halos en cada cambio de sección. */
+.ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ambient-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='1' cy='1' r='1' fill='rgba(255,255,255,0.05)'/%3E%3C/svg%3E");
+}
+.ambient-halo { position: absolute; border-radius: 9999px; }
+.halo-blue {
+  left: 25%; top: 25%; width: 384px; height: 384px;
+  background: rgb(var(--c-blue-600) / 0.2); filter: blur(120px);
+}
+.halo-pink {
+  right: 25%; bottom: 25%; width: 384px; height: 384px;
+  background: rgb(var(--c-pink-600) / 0.2); filter: blur(120px);
+}
+.halo-purple {
+  left: 50%; top: 50%; width: 500px; height: 500px;
+  transform: translate(-50%, -50%);
+  background: rgb(var(--c-purple-600) / 0.15); filter: blur(150px);
 }
 
-#app { min-height: 100vh; display: flex; }
+/* Encima del fondo ambiental (z-index 0), como el storefront. */
+#app { min-height: 100vh; display: flex; position: relative; z-index: 1; }
 
 /* ---------- Barra lateral ---------- */
 .sidebar {
@@ -631,6 +770,16 @@ details.card-fold[open] > summary { margin-bottom: 8px; }
   font-family: 'Courier New', Courier, monospace;
   font-size: 13px;
   line-height: 1.45;
+  /* Blindaje del export: html2canvas copia los estilos computados del
+     DOM. Se fijan las propiedades heredables que el tema de la app podría
+     cambiar, para que el PDF/PNG no dependa del chrome. */
+  font-weight: 400;
+  font-style: normal;
+  font-variant: normal;
+  letter-spacing: normal;
+  text-transform: none;
+  text-align: left;
+  -webkit-font-smoothing: auto;
 }
 .q-topline { border-top: 3px solid #000; margin-bottom: 14px; }
 .q-header {
