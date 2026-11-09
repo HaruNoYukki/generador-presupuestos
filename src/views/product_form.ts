@@ -11,6 +11,7 @@
 import { api, NewManualComponent, UpdateComponentInput } from '../api';
 import { ComponentDto, Kind, Offer, Specs } from '../types';
 import { closeModal, el, modal, money } from '../ui';
+import { Lock, RotateCcw, icon } from '../icons';
 
 export interface ProductFormOptions {
   /** Si viene, limita el select de tipo a estos kinds (picker de slot). */
@@ -82,13 +83,14 @@ function specInputsFor(
       class: 'btn btn-outline btn-xs',
       type: 'button',
       title: 'Volver al valor que trajo la lista del proveedor',
-    }, `↺ usar lista (${listVal || 'vacío'})`);
+    }, icon(RotateCcw, 12), `usar lista (${listVal || 'vacío'})`);
     revert.addEventListener('click', () => {
       input.value = listVal;
       input.dispatchEvent(new Event('change'));
     });
     return el('label', { class: 'spec-locked' },
-      el('span', { class: 'spec-lock-label', title: 'Corregido a mano: protegido del import' }, `🔒 ${label}`),
+      el('span', { class: 'spec-lock-label', title: 'Corregido a mano: protegido del import' },
+        icon(Lock, 12), ` ${label}`),
       input,
       revert,
     );
@@ -213,7 +215,7 @@ export async function openProductForm(opts: ProductFormOptions): Promise<void> {
   const kindLocked = listLocked && initial.overrides?.kind != null;
   const kindLabel: (Node | string)[] = kindLocked
     ? [el('span', { class: 'spec-lock-label', title: 'Tipo corregido a mano: protegido del import' },
-        `🔒 Tipo (lista: ${KIND_LABELS[initial.list_kind] ?? initial.list_kind})`)]
+        icon(Lock, 12), ` Tipo (lista: ${KIND_LABELS[initial.list_kind] ?? initial.list_kind})`)]
     : ['Tipo'];
 
   // Oferta a editar: en modo edición se elige entre las del producto
@@ -301,7 +303,7 @@ export async function openProductForm(opts: ProductFormOptions): Promise<void> {
     } else if (isManual) {
       priceNote.textContent = 'Oferta capturada a mano: los cambios se escriben directo.';
     } else if (selectedOffer.price_overridden || selectedOffer.stock_overridden) {
-      priceNote.textContent = '🔒 Corregido a mano: protegido del import.';
+      priceNote.replaceChildren(icon(Lock, 12), ' Corregido a mano: protegido del import.');
     } else {
       priceNote.textContent = 'Los cambios quedan protegidos del import (corrige datos que la lista trae incompletos).';
     }
@@ -315,7 +317,7 @@ export async function openProductForm(opts: ProductFormOptions): Promise<void> {
       if (selectedOffer.stock_overridden && selectedOffer.list_stock != null) {
         parts.push(`existencia ${selectedOffer.list_stock}`);
       }
-      revertBtn.textContent = `↺ usar lista (${parts.join(' · ')})`;
+      revertBtn.replaceChildren(icon(RotateCcw, 12), `usar lista (${parts.join(' · ')})`);
     }
   }
   revertBtn.addEventListener('click', async () => {

@@ -5,6 +5,7 @@
 import { api } from '../api';
 import { Assembly, ProfitLine, ProfitReport } from '../types';
 import { el, typeChip } from '../ui';
+import { Download, icon } from '../icons';
 import logoUrl from '../assets/nykniu-logo.png';
 
 export interface QuoteViewDeps {
@@ -326,9 +327,9 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
       }
     });
 
-    const pdfBtn = el('button', { class: 'btn btn-primary' }, '⤓ Exportar PDF');
+    const pdfBtn = el('button', { class: 'btn btn-primary' }, icon(Download), 'Exportar PDF');
     pdfBtn.addEventListener('click', exportPdf);
-    const pngBtn = el('button', { class: 'btn btn-outline' }, '⤓ Exportar PNG');
+    const pngBtn = el('button', { class: 'btn btn-outline' }, icon(Download), 'Exportar PNG');
     pngBtn.addEventListener('click', exportPng);
 
     view.replaceChildren(

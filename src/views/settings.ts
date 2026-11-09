@@ -4,6 +4,7 @@ import { api } from '../api';
 import { kindLabel } from '../meta';
 import { OutOfStockHit, RateInfo, XlsxImportSummary } from '../types';
 import { el } from '../ui';
+import { Check, Download, Info, Sparkles, TriangleExclamationPoint, Upload, icon } from '../icons';
 
 // El último informe de importación vive fuera de la vista: la vista se
 // recrea cada vez que se entra a Ajustes, y el informe debe seguir
@@ -26,7 +27,7 @@ let activeSection: SectionId = 'listas';
  * en vez de ocupar la tarjeta. */
 function help(text: string): HTMLElement {
   return el('details', { class: 'help' },
-    el('summary', {}, 'ⓘ ¿Cómo funciona?'),
+    el('summary', {}, icon(Info, 12), ' ¿Cómo funciona?'),
     el('p', { class: 'muted small' }, text),
   );
 }
@@ -51,7 +52,7 @@ function setOnce(summary: string | null, form: HTMLElement): HTMLElement {
 function renderImportReport(hits: OutOfStockHit[]): HTMLElement {
   if (hits.length === 0) {
     return el('p', { class: 'ok-note small' },
-      '✓ Ningún preensamble ni personalizado vigente quedó sin existencias.');
+      icon(Check, 12), ' Ningún preensamble ni personalizado vigente quedó sin existencias.');
   }
   const newly = hits.filter((h) => h.newly_out).length;
   const rows = hits.map((h) => {
@@ -80,7 +81,8 @@ function renderImportReport(hits: OutOfStockHit[]): HTMLElement {
   });
   return el('details', { class: 'import-report warn' },
     el('summary', { class: 'form-error' },
-      `⚠ ${hits.length} componente(s) sin existencia suficiente en ensambles vigentes` +
+      icon(TriangleExclamationPoint),
+      ` ${hits.length} componente(s) sin existencia suficiente en ensambles vigentes` +
       (newly ? ` · ${newly} se acaban de agotar con esta lista` : '')),
     el('p', { class: 'muted small' },
       'Esos ensambles quedan con pendientes hasta cambiar el componente.'),
@@ -131,7 +133,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     // encabezados y hace UPSERT por SKU.
     const xlsxMsg = el('p', { class: 'form-error' });
     const xlsxBtn = el('button', { class: 'btn btn-primary' },
-      '⤒ Importar Excel del proveedor (.xlsx)');
+      icon(Upload), 'Importar Excel del proveedor (.xlsx)');
     xlsxBtn.addEventListener('click', async () => {
       xlsxMsg.textContent = '';
       xlsxMsg.className = 'form-error';
@@ -230,7 +232,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     }) as HTMLInputElement;
     const cvaImportMsg = el('p', { class: 'form-error' });
     const cvaImportBtn = el('button', { class: 'btn btn-primary' },
-      '⤓ Importar de CVA (grupos seleccionados)');
+      icon(Download), 'Importar de CVA (grupos seleccionados)');
     cvaImportBtn.addEventListener('click', async () => {
       cvaImportMsg.textContent = '';
       const grupos = groupChecks.filter((g) => g.box.checked).map((g) => g.name);
@@ -277,7 +279,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     // La base hace UPSERT por SKU: actualiza existentes e inserta nuevos.
     const importMsg = el('p', { class: 'form-error' });
     const importBtn = el('button', { class: 'btn btn-primary' },
-      '⤒ Importar catálogo (JSON)');
+      icon(Upload), 'Importar catálogo (JSON)');
     importBtn.addEventListener('click', async () => {
       importMsg.textContent = '';
       importMsg.className = 'form-error';
@@ -503,7 +505,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
       }
     });
     const zaiImprove = el('button', { class: 'btn btn-primary' },
-      '✨ Normalizar títulos con IA (lote de 100)');
+      icon(Sparkles), 'Normalizar títulos con IA (lote de 100)');
     zaiImprove.addEventListener('click', async () => {
       zaiMsg.textContent = '';
       try {

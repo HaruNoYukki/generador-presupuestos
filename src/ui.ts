@@ -1,4 +1,5 @@
 // Helpers de DOM, formato y modales.
+import { icon, X } from './icons';
 
 export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -60,7 +61,7 @@ export function modal(title: string, body: HTMLElement): HTMLElement {
   const box = el('div', { class: 'modal-box' },
     el('header', { class: 'modal-head' },
       el('h3', {}, title),
-      el('button', { class: 'icon-btn', onclick: closeModal }, '✕'),
+      el('button', { class: 'icon-btn', title: 'Cerrar', onclick: closeModal }, icon(X)),
     ),
     body,
   );

@@ -3,6 +3,10 @@ import { api } from '../api';
 import { SLOTS, SlotMeta, kindLabel } from '../meta';
 import { Assembly, AssemblyRefreshReport, AssemblySummary, ComponentDto, CostBreakdown, ValidationReport } from '../types';
 import { closeModal, el, modal, mxn } from '../ui';
+import {
+  ArrowUpRight, ChartColumn, Check, ChevronLeft, ChevronRight, Cog, Copy, Globe,
+  Minus, PenLine, Play, Plus, RefreshCw, Repeat, Trash, TriangleExclamationPoint, X, icon,
+} from '../icons';
 import { openProductForm } from './product_form';
 
 export interface AssemblyViewDeps {
@@ -143,7 +147,8 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     }
     const replaceBanner = toReplace
       ? el('p', { class: 'replace-banner' },
-          `🔁 “${toReplace.description}” ya no puede usarse en ensamble. ` +
+          icon(Repeat),
+          ` “${toReplace.description}” ya no puede usarse en ensamble. ` +
           'La lista muestra solo componentes utilizables, ordenados por cercanía de precio.')
       : null;
 
@@ -213,7 +218,8 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
             [c.sku, c.brand, kindLabel(c.kind), c.condition === 'usado' ? 'USADO' : null]
               .filter(Boolean)
               .join(' · ')),
-          el('div', { class: 'replace-note' }, `⚠ Componente a reemplazar: ${motivo}.`),
+          el('div', { class: 'replace-note' },
+            icon(TriangleExclamationPoint, 12), ` Componente a reemplazar: ${motivo}.`),
         ),
         el('div', { class: 'picker-side' },
           el('div', { class: 'strong' }, mxn(c.price_mxp.amount)),
@@ -228,10 +234,10 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     function pagerEl(total: number, pages: number): HTMLElement {
       const prev = el('button', {
         class: 'icon-btn', title: 'Página anterior', disabled: page <= 1,
-      }, '‹');
+      }, icon(ChevronLeft));
       const next = el('button', {
         class: 'icon-btn', title: 'Página siguiente', disabled: page >= pages,
-      }, '›');
+      }, icon(ChevronRight));
       prev.addEventListener('click', () => {
         if (page > 1) { page--; drawList(); list.scrollTop = 0; }
       });
@@ -258,7 +264,8 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         const elegido = chosenSupplier ? chosenSupplier === o.supplier : c.supplier === o.supplier;
         const usable = !(o.cd_only && o.stock_ensamble === 0) && o.stock_ensamble > 0;
         const useBtn = usable
-          ? el('button', { class: 'btn btn-sm btn-outline offer-use' }, elegido ? '✓ Usando' : 'Usar este')
+          ? el('button', { class: 'btn btn-sm btn-outline offer-use' },
+              elegido ? icon(Check) : null, elegido ? 'Usando' : 'Usar este')
           : el('span', { class: 'chip chip-danger' }, o.stock_ensamble === 0 ? 'sin existencia' : 'solo CD');
         if (usable && current) {
           useBtn.addEventListener('click', async (e) => {
@@ -336,7 +343,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     };
     // Botón para limpiar la búsqueda: algunos entornos no disparan 'input'
     // al vaciar el campo, y el usuario necesita volver a la lista completa.
-    const clearBtn = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, '✕');
+    const clearBtn = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, icon(X));
     clearBtn.addEventListener('click', () => {
       search.value = '';
       resetPageAndDraw();
@@ -348,7 +355,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     // Alta de productos desde el propio picker (p. ej. captura manual de
     // proveedores sin Excel como PCH). Al guardar se auto-selecciona.
     const addNewBtn = el('button', { class: 'btn btn-outline' },
-      `＋ Agregar ${slot.label.toLowerCase()} nuevo`);
+      icon(Plus), `Agregar ${slot.label.toLowerCase()} nuevo`);
     addNewBtn.addEventListener('click', () => {
       openProductForm({
         title: `Agregar ${slot.label.toLowerCase()} nuevo`,
@@ -391,12 +398,12 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       const outOfStock = item.quantity > available;
       const qtyControls = slot.multiple
         ? [
-            el('button', { class: 'icon-btn', title: 'Quitar una unidad' }, '−'),
+            el('button', { class: 'icon-btn', title: 'Quitar una unidad' }, icon(Minus)),
             el('button', {
               class: 'icon-btn',
               title: item.quantity >= available ? `Sin más existencia (disponible ${available})` : 'Agregar una unidad',
               disabled: item.quantity >= available,
-            }, '+'),
+            }, icon(Plus)),
           ]
         : [];
       if (slot.multiple) {
@@ -407,7 +414,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
           current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, item.quantity + 1, item.supplier)),
         );
       }
-      const removeBtn = el('button', { class: 'icon-btn', title: 'Quitar' }, '✕');
+      const removeBtn = el('button', { class: 'icon-btn', title: 'Quitar' }, icon(X));
       removeBtn.addEventListener('click', () =>
         current && mutate(api.setAssemblyItem(current.id, slot.id, item.component_id, 0, item.supplier)),
       );
@@ -460,12 +467,12 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         'Falta fuente: agrega una dedicada o elige un gabinete que incluya una.');
     }
 
-    const addBtn = el('button', { class: 'btn btn-sm btn-outline' }, '+ Agregar');
+    const addBtn = el('button', { class: 'btn btn-sm btn-outline' }, icon(Plus), 'Agregar');
     addBtn.addEventListener('click', () => current && openPicker(slot));
 
     let clearBtn: HTMLElement | null = null;
     if (filled) {
-      clearBtn = el('button', { class: 'icon-btn', title: 'Vaciar slot' }, '🗑');
+      clearBtn = el('button', { class: 'icon-btn', title: 'Vaciar slot' }, icon(Trash));
       clearBtn.addEventListener('click', () =>
         current && mutate(api.clearAssemblySlot(current.id, slot.id)),
       );
@@ -485,7 +492,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
           slot.label,
           slot.required
             ? (covered
-                ? el('span', { class: 'chip chip-ok' }, '✓ cubierto')
+                ? el('span', { class: 'chip chip-ok' }, icon(Check, 12), ' cubierto')
                 : el('span', { class: 'chip chip-req' }, 'obligatorio'))
             : el('span', { class: 'chip chip-opt' }, 'opcional'),
         ),
@@ -503,7 +510,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     }
     const badge = el('span', {
       class: `chip ${report.is_valid ? 'chip-ok' : 'chip-bad'}`,
-    }, report.is_valid ? '✓ Equipo completo' : '✗ Incompleto');
+    }, icon(report.is_valid ? Check : X, 12), report.is_valid ? ' Equipo completo' : ' Incompleto');
 
     // El aviso "fuente cubierta por gabinete" ya se muestra como nota verde
     // en el slot y en la fila de cobertura: no repetirlo una tercera vez.
@@ -581,7 +588,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
         el('span', {}, ` — Con SKU: ${p.sku} — Por favor verifica existencia`)),
     );
     return el('div', { class: 'pch-banner', role: 'alert' },
-      el('strong', {}, '⚠ Advertencia'),
+      el('strong', {}, icon(TriangleExclamationPoint), ' Advertencia'),
       el('div', {},
         el('span', {},
           'Este ensamble tiene el siguiente producto de PCH: '),
@@ -604,7 +611,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     }
     if (current.based_on) {
       chips.push(el('span', { class: 'banner-meta based-on' },
-        `⤴ basado en el preensamble: ${current.based_on}`));
+        icon(ArrowUpRight, 12), ` basado en el preensamble: ${current.based_on}`));
     }
     return el('div', { class: `type-banner type-${current.quote_type}` },
       el('span', { class: 'type-chip' }, isPre ? 'PREENSAMBLE' : 'PERSONALIZADO'),
@@ -658,7 +665,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       });
       pchBlock.push(
         el('div', { class: 'pch-banner' },
-          el('strong', {}, '⚠ Componentes de PCH/captura manual: '),
+          el('strong', {}, icon(TriangleExclamationPoint), ' Componentes de PCH/captura manual: '),
           el('p', { class: 'pch-line' }, 'No se pueden actualizar automáticamente. Verifica su existencia a mano y aprueba para continuar.'),
           ...buckets.pch.map((p) => el('div', { class: 'pch-line' }, `${p.desc} — SKU: ${p.sku}`)),
           el('label', { class: 'filter-check' },
@@ -670,7 +677,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     const runBtn = el('button', {
       class: 'btn btn-primary',
       disabled: buckets.pch.length > 0,
-    }, '🔄 Actualizar ahora') as HTMLButtonElement;
+    }, icon(RefreshCw), 'Actualizar ahora') as HTMLButtonElement;
 
     async function run() {
       runBtn.disabled = true;
@@ -762,13 +769,13 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
           : 'El preensamble está vigente: solo se refrescan precios y existencias.'),
       el('div', { class: 'rate-rows' },
         el('div', { class: 'rate-row' },
-          el('span', { class: 'muted' }, '🌐 CVA (feed XML: precios y existencias)'),
+          el('span', { class: 'muted' }, icon(Globe), ' CVA (feed XML: precios y existencias)'),
           el('span', { class: 'strong' }, `${buckets.cva.length}`)),
         el('div', { class: 'rate-row' },
-          el('span', { class: 'muted' }, '📊 Arroba (se pedirá el XLSX)'),
+          el('span', { class: 'muted' }, icon(ChartColumn), ' Arroba (se pedirá el XLSX)'),
           el('span', { class: 'strong' }, `${buckets.arroba.length}`)),
         el('div', { class: 'rate-row' },
-          el('span', { class: 'muted' }, '✍️ PCH / manual (aprobación manual)'),
+          el('span', { class: 'muted' }, icon(PenLine), ' PCH / manual (aprobación manual)'),
           el('span', { class: 'strong' }, `${buckets.pch.length}`)),
       ),
       ...pchBlock,
@@ -799,7 +806,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       searchNumber = numberSearch.value;
       refreshSelector(filtered);
     });
-    const clearSearch = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, '✕');
+    const clearSearch = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, icon(X));
     clearSearch.addEventListener('click', () => {
       searchNumber = '';
       numberSearch.value = '';
@@ -840,7 +847,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     sel.addEventListener('change', () => select(sel.value));
 
     // Confirmar: guarda el ensamble como cotización (fase 3)
-    const confirmBtn = el('button', { class: 'btn btn-primary' }, '✓ Confirmar');
+    const confirmBtn = el('button', { class: 'btn btn-primary' }, icon(Check), 'Confirmar');
     confirmBtn.addEventListener('click', async () => {
       if (!current) return;
       try {
@@ -854,7 +861,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       }
     });
 
-    const newBtn = el('button', { class: 'btn btn-primary' }, '+ Nueva cotización');
+    const newBtn = el('button', { class: 'btn btn-primary' }, icon(Plus), 'Nueva cotización');
     newBtn.addEventListener('click', async () => {
       const name = el('input', {
         class: 'input',
@@ -905,9 +912,10 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       class: 'btn btn-outline',
       title: 'Crea una cotización PERSONALIZADA nueva usando este ensamble como base (nace sin folio y sin confirmar)',
     },
+      icon(Copy),
       current?.quote_type === 'preensamble'
-        ? '⧉ Generar personalizado desde este preensamble'
-        : '⧉ Duplicar como personalizado');
+        ? 'Generar personalizado desde este preensamble'
+        : 'Duplicar como personalizado');
     dupBtn.addEventListener('click', async () => {
       if (!current) return;
       const copy = await api.duplicateAssembly(current.id);
@@ -916,7 +924,8 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
 
     // En fabricación: bloquea la caducidad y permite vender aunque pase la fecha
     const fabBtn = el('button', { class: 'btn btn-outline' },
-      current?.in_fabrication ? '⏵ Quitar fabricación' : '⚙ En fabricación');
+      icon(current?.in_fabrication ? Play : Cog),
+      current?.in_fabrication ? 'Quitar fabricación' : 'En fabricación');
     fabBtn.addEventListener('click', async () => {
       if (!current) return;
       await api.setFabrication(current.id, !current.in_fabrication);
@@ -924,7 +933,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
     });
 
     const refreshBtn = current?.quote_type === 'preensamble'
-      ? el('button', { class: 'btn btn-outline', title: 'Renueva la vigencia si está caducado y actualiza precios/existencias (CVA vía feed XML, arroba con el XLSX, PCH con tu aprobación)' }, '🔄 Actualizar')
+      ? el('button', { class: 'btn btn-outline', title: 'Renueva la vigencia si está caducado y actualiza precios/existencias (CVA vía feed XML, arroba con el XLSX, PCH con tu aprobación)' }, icon(RefreshCw), 'Actualizar')
       : null;
     if (refreshBtn) refreshBtn.addEventListener('click', openRefreshWizard);
 
@@ -994,7 +1003,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       view.replaceChildren(
         renderHeader(),
         el('div', { class: 'panel-muted' },
-          'Aún no hay ensambles. Crea uno con “+ Nuevo ensamble”.'),
+          'Aún no hay cotizaciones. Crea una con «Nueva cotización».'),
       );
       return;
     }

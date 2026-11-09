@@ -4,6 +4,7 @@
 import { api } from '../api';
 import { Assembly, ProfitReport } from '../types';
 import { el, mxn, typeChip } from '../ui';
+import { X, icon } from '../icons';
 
 export interface ProfitViewDeps {
   getSelectedAssembly: () => Assembly | null;
@@ -113,7 +114,7 @@ export function createProfitView(deps: ProfitViewDeps): HTMLElement {
     const clearTarget = el('button', {
       class: 'icon-btn',
       title: 'Quitar precio objetivo',
-    }, '✕');
+    }, icon(X));
     clearTarget.addEventListener('click', () => {
       setTarget('');
       target.value = '';

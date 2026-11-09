@@ -4,6 +4,7 @@
 import { api } from '../api';
 import { Assembly, ProfitLine, ProfitReport } from '../types';
 import { el, mxn, typeChip } from '../ui';
+import { Check, Download, icon } from '../icons';
 import logoUrl from '../assets/nykniu-logo.png';
 
 export interface SaleViewDeps {
@@ -201,7 +202,7 @@ export function createSaleView(deps: SaleViewDeps): HTMLElement {
   function serialEditor(): HTMLElement {
     const pending = unitRows.filter((r) => r.serial.trim() === '').length;
     const hint = pending === 0
-      ? el('span', { class: 'ok-note' }, '✓ Todos los números de serie capturados')
+      ? el('span', { class: 'ok-note' }, icon(Check), ' Todos los números de serie capturados')
       : el('span', { class: 'muted' }, `Faltan ${pending} números de serie por capturar`);
 
     const table = el('table', { class: 'catalog-table serial-table' },
@@ -407,11 +408,11 @@ export function createSaleView(deps: SaleViewDeps): HTMLElement {
       }
     });
 
-    const pdfBtn = el('button', { class: 'btn btn-primary' }, '⤓ Exportar PDF');
+    const pdfBtn = el('button', { class: 'btn btn-primary' }, icon(Download), 'Exportar PDF');
     pdfBtn.addEventListener('click', exportPdf);
-    const pngBtn = el('button', { class: 'btn btn-outline' }, '⤓ Exportar PNG');
+    const pngBtn = el('button', { class: 'btn btn-outline' }, icon(Download), 'Exportar PNG');
     pngBtn.addEventListener('click', exportPng);
-    const issueBtn = el('button', { class: 'btn btn-primary' }, '✓ Emitir nota de venta');
+    const issueBtn = el('button', { class: 'btn btn-primary' }, icon(Check), 'Emitir nota de venta');
     issueBtn.addEventListener('click', issue);
 
     const quoteNum = selected()?.quote_number ?? null;

@@ -4,6 +4,7 @@
 import { api } from '../api';
 import { CartItem, ComponentDto, ProfitLine, ProfitReport } from '../types';
 import { el, mxn } from '../ui';
+import { Check, Download, Minus, Plus, X, icon } from '../icons';
 import logoUrl from '../assets/nykniu-logo.png';
 
 export interface SaleDirectDeps {
@@ -108,7 +109,7 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
                 `${c.sku} · ${c.brand} · vendible: ${sellableStock(c)}`)),
             el('div', { class: 'picker-side' },
               el('div', { class: 'strong' }, mxn(c.price_mxp.amount)),
-              el('span', { class: 'chip chip-ok' }, '+ agregar')),
+              el('span', { class: 'chip chip-ok' }, icon(Plus, 12), ' agregar')),
           );
           row.addEventListener('click', () => {
             addToCart(c.id);
@@ -179,13 +180,13 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
           el('div', { class: 'sub' }, `${c.sku} · inventario vendible: ${stock}`)),
         el('td', { class: 'num' },
           el('div', { class: 'qty-stepper' },
-            el('button', { class: 'icon-btn', title: 'Quitar una' }, '−'),
+            el('button', { class: 'icon-btn', title: 'Quitar una' }, icon(Minus)),
             el('span', { class: 'qty' }, `×${item.quantity}`),
-            el('button', { class: 'icon-btn', title: 'Agregar una' }, '+'),
+            el('button', { class: 'icon-btn', title: 'Agregar una' }, icon(Plus)),
           ),
         ),
         el('td', { class: 'num strong' }, mxn(c.price_mxp.amount)),
-        el('td', {}, el('button', { class: 'icon-btn', title: 'Quitar del carrito' }, '✕')),
+        el('td', {}, el('button', { class: 'icon-btn', title: 'Quitar del carrito' }, icon(X))),
       );
     });
 
@@ -297,7 +298,7 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
       deps.setParams({ ...deps.getParams(), target: target.value });
       load();
     });
-    const clear = el('button', { class: 'icon-btn', title: 'Quitar precio objetivo' }, '✕');
+    const clear = el('button', { class: 'icon-btn', title: 'Quitar precio objetivo' }, icon(X));
     clear.addEventListener('click', () => {
       deps.setParams({ ...deps.getParams(), target: '' });
       load();
@@ -584,11 +585,11 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
           render();
         }
       });
-      const issueBtn = el('button', { class: 'btn btn-primary' }, '✓ Emitir nota de venta');
+      const issueBtn = el('button', { class: 'btn btn-primary' }, icon(Check), 'Emitir nota de venta');
       issueBtn.addEventListener('click', issue);
-      const pdfBtn = el('button', { class: 'btn btn-primary' }, '⤓ Exportar PDF');
+      const pdfBtn = el('button', { class: 'btn btn-primary' }, icon(Download), 'Exportar PDF');
       pdfBtn.addEventListener('click', exportPdf);
-      const pngBtn = el('button', { class: 'btn btn-outline' }, '⤓ Exportar PNG');
+      const pngBtn = el('button', { class: 'btn btn-outline' }, icon(Download), 'Exportar PNG');
       pngBtn.addEventListener('click', exportPng);
       children.push(
         el('div', { class: 'toolbar' }, numberBtn, issueBtn, pdfBtn, pngBtn,

@@ -9,6 +9,7 @@ import { createSaleView } from './views/sale';
 import { createSaleDirectView } from './views/sale_direct';
 import { createSettingsView } from './views/settings';
 import { el } from './ui';
+import { ChevronLeft, ChevronRight, icon } from './icons';
 import type { CartItem, CatalogOverview, ComponentDto } from './types';
 
 type Tab = 'ensamble' | 'ganancias' | 'cotizacion' | 'venta' | 'directa' | 'catalogo' | 'ajustes';
@@ -64,7 +65,7 @@ function renderShell() {
 function renderSidebar(): HTMLElement {
   const overview = state.overview;
   return el('aside', { class: 'sidebar' },
-    el('h1', { class: 'side-brand' }, '⚙ Generador de Presupuestos'),
+    el('h1', { class: 'side-brand' }, 'Generador de Presupuestos'),
     el('nav', { class: 'side-nav' },
       ...SECTIONS.map((section) =>
         el('div', { class: 'side-section' },
@@ -110,7 +111,7 @@ function renderStepBar(): HTMLElement | null {
       onclick: () => {
         if (prev) setTab(prev.id);
       },
-    }, prev ? `‹ ${prev.label}` : '‹ Anterior'),
+    }, icon(ChevronLeft), prev ? prev.label : 'Anterior'),
     el('div', { class: 'step-info' },
       el('span', { class: 'step-count' }, `Paso ${i + 1} de ${FLOW.length}`),
       el('strong', {}, FLOW[i].label),
@@ -122,7 +123,7 @@ function renderStepBar(): HTMLElement | null {
       onclick: () => {
         if (next) setTab(next.id);
       },
-    }, next ? `${next.label} ›` : 'Siguiente ›'),
+    }, next ? next.label : 'Siguiente', icon(ChevronRight)),
   );
 }
 

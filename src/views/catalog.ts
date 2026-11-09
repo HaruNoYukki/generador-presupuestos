@@ -3,6 +3,7 @@ import { openProductForm } from './product_form';
 import { kindLabel, PICKABLE_KINDS } from '../meta';
 import { ComponentDto } from '../types';
 import { el, money, mxn } from '../ui';
+import { Lock, Pencil, Plus, X, icon } from '../icons';
 
 interface CatalogState {
   components: ComponentDto[];
@@ -19,12 +20,13 @@ export function createCatalogView(
 
   const view = el('section', { class: 'view catalog-view' });
 
-  function specBadges(c: ComponentDto): string[] {
+  function specBadges(c: ComponentDto): (Node | string)[] {
     const s = c.specs ?? {};
     // Las specs corregidas a mano (protegidas del import) llevan candado.
     const locked = new Set(Object.keys(c.overrides?.specs ?? {}));
-    const lk = (key: string, text: string) => (locked.has(key) ? `🔒 ${text}` : text);
-    const out: string[] = [];
+    const lk = (key: string, text: string): Node | string =>
+      locked.has(key) ? el('span', { class: 'spec-lock' }, icon(Lock, 12), ` ${text}`) : text;
+    const out: (Node | string)[] = [];
     if (s.socket) out.push(lk('socket', s.socket));
     if (s.includes_cooler === true) out.push(lk('includes_cooler', 'trae disipador'));
     if (s.includes_cooler === false) out.push(lk('includes_cooler', 'sin disipador'));
@@ -92,7 +94,7 @@ export function createCatalogView(
   }
 
   function editButton(c: ComponentDto): HTMLElement {
-    const btn = el('button', { class: 'icon-btn', title: `Editar ${c.sku}` }, '✎');
+    const btn = el('button', { class: 'icon-btn', title: `Editar ${c.sku}` }, icon(Pencil));
     btn.addEventListener('click', () => {
       openProductForm({ initial: c, onSaved: afterSaved });
     });
@@ -130,10 +132,8 @@ export function createCatalogView(
                 c.source === 'manual' ? el('span', { class: 'chip chip-manual' }, 'MANUAL') : null,
                 c.stock_ensamble_total === 0 ? el('span', { class: 'chip chip-danger' }, 'AGOTADO') : null,
               ),
-              el('div', { class: 'sub' }, [
-                c.sku,
-                ...specBadges(c),
-              ].join(' · ')),
+              el('div', { class: 'sub' },
+                ...[c.sku, ...specBadges(c)].flatMap((part, i) => (i ? [' · ', part] : [part]))),
             ),
             el('td', {}, c.brand),
             el('td', { class: 'col-cond' }, c.condition === 'usado' ? 'Usado' : 'Nuevo'),
@@ -180,7 +180,7 @@ export function createCatalogView(
       tableZone.replaceChildren(renderTable());
     });
 
-    const clearSearch = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, '✕');
+    const clearSearch = el('button', { class: 'icon-btn', title: 'Limpiar búsqueda' }, icon(X));
     clearSearch.addEventListener('click', () => {
       state.query = '';
       search.value = '';
@@ -188,7 +188,8 @@ export function createCatalogView(
       search.focus();
     });
 
-    const manualBtn = el('button', { class: 'btn btn-primary' }, '+ Agregar producto (manual / PCH)');
+    const manualBtn = el('button', { class: 'btn btn-primary' },
+      icon(Plus), 'Agregar producto (manual / PCH)');
     manualBtn.addEventListener('click', () => {
       openProductForm({
         title: 'Agregar producto',
