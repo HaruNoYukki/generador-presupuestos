@@ -22,21 +22,36 @@ const SECTIONS: { id: SectionId; label: string }[] = [
 // render() y a salir y volver a Ajustes.
 let activeSection: SectionId = 'listas';
 
-/** Informe post-import: componentes de ensambles vigentes sin existencia. */
-function renderImportReport(
-  hits: OutOfStockHit[],
-  meta: { supplier: string; zeroed: number },
-): HTMLElement {
-  const head = el('div', { class: 'report-head' },
-    el('h4', {}, 'Informe de existencias tras importar'),
-    el('span', { class: 'muted small' },
-      `${meta.supplier} · ${meta.zeroed} SKU agotados por no venir en la lista`),
+/** Ayuda plegada: el detalle de cómo funciona cada opción queda a un clic
+ * en vez de ocupar la tarjeta. */
+function help(text: string): HTMLElement {
+  return el('details', { class: 'help' },
+    el('summary', {}, 'ⓘ ¿Cómo funciona?'),
+    el('p', { class: 'muted small' }, text),
   );
+}
+
+/** Ajuste que se captura una vez: con valor guardado se muestra resumido
+ * con «Cambiar»; sin valor (o tras pulsar Cambiar), el formulario. */
+function setOnce(summary: string | null, form: HTMLElement): HTMLElement {
+  if (!summary) return form;
+  const change = el('button', { class: 'btn btn-outline btn-sm' }, 'Cambiar');
+  const line = el('div', { class: 'set-once' }, el('span', {}, summary), change);
+  form.hidden = true;
+  change.addEventListener('click', () => {
+    line.hidden = true;
+    form.hidden = false;
+  });
+  return el('div', {}, line, form);
+}
+
+/** Informe post-import: componentes de ensambles vigentes sin existencia.
+ * Solo la alerta queda a la vista; el detalle por componente (con listas
+ * grandes puede ser larguísimo) queda plegado. */
+function renderImportReport(hits: OutOfStockHit[]): HTMLElement {
   if (hits.length === 0) {
-    return el('div', { class: 'import-report ok' },
-      head,
-      el('p', { class: 'ok-note' }, 'Ningún preensamble ni personalizado vigente quedó sin existencias.'),
-    );
+    return el('p', { class: 'ok-note small' },
+      '✓ Ningún preensamble ni personalizado vigente quedó sin existencias.');
   }
   const newly = hits.filter((h) => h.newly_out).length;
   const rows = hits.map((h) => {
@@ -63,12 +78,12 @@ function renderImportReport(
       el('ul', { class: 'report-asms' }, ...asms),
     );
   });
-  return el('div', { class: 'import-report warn' },
-    head,
-    el('p', { class: 'form-error' },
-      `${hits.length} componente(s) sin existencia suficiente en ensambles vigentes` +
-      (newly ? ` · ${newly} se acaban de agotar con esta lista` : '') +
-      '. Esos ensambles quedan con pendientes hasta cambiar el componente.'),
+  return el('details', { class: 'import-report warn' },
+    el('summary', { class: 'form-error' },
+      `⚠ ${hits.length} componente(s) sin existencia suficiente en ensambles vigentes` +
+      (newly ? ` · ${newly} se acaban de agotar con esta lista` : '')),
+    el('p', { class: 'muted small' },
+      'Esos ensambles quedan con pendientes hasta cambiar el componente.'),
     ...rows,
   );
 }
@@ -148,11 +163,11 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
 
     const xlsxReport = lastXlsx
       ? el('div', {},
-          el('p', { class: 'ok-note' },
+          el('p', { class: 'ok-note small' },
             `Última importación ${lastXlsx.at.toLocaleString('es-MX')}: ${lastXlsx.summary.supplier} · ` +
             `${lastXlsx.summary.updated} actualizados, ${lastXlsx.summary.inserted} nuevos, ` +
             `${lastXlsx.summary.zeroed} agotados.`),
-          renderImportReport(lastXlsx.summary.out_of_stock, lastXlsx.summary),
+          renderImportReport(lastXlsx.summary.out_of_stock),
         )
       : null;
 
@@ -174,8 +189,8 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
       feedMsg.textContent = '';
       try {
         await api.setCvaFeedConfig({ cliente: feedCliente.value.trim() });
-        feedMsg.className = 'ok-note';
-        feedMsg.textContent = 'Número de cliente guardado.';
+        // Se repinta para que el número guardado quede resumido.
+        await render();
       } catch (e) {
         feedMsg.textContent = String(e);
       }
@@ -186,6 +201,29 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
       const box = el('input', { type: 'checkbox', checked: true }) as HTMLInputElement;
       return { name: g, box };
     });
+    // Grupos plegados, con el conteo de seleccionados a la vista.
+    const groupsCount = el('span', { class: 'muted' });
+    const paintGroupsCount = () => {
+      const n = groupChecks.filter((g) => g.box.checked).length;
+      groupsCount.textContent = ` (${n} de ${groupChecks.length})`;
+    };
+    const setAllGroups = (checked: boolean) => {
+      for (const g of groupChecks) g.box.checked = checked;
+      paintGroupsCount();
+    };
+    for (const g of groupChecks) g.box.addEventListener('change', paintGroupsCount);
+    paintGroupsCount();
+    const groupsBox = el('details', { class: 'group-details' },
+      el('summary', {}, 'Grupos a importar', groupsCount),
+      el('div', { class: 'group-checks' },
+        ...groupChecks.map(({ name, box }) =>
+          el('label', { class: 'filter-check' }, box, ` ${name}`))),
+      el('div', { class: 'group-actions' },
+        el('button', { class: 'btn btn-outline btn-xs', onclick: () => setAllGroups(true) }, 'Todos'),
+        el('button', { class: 'btn btn-outline btn-xs', onclick: () => setAllGroups(false) }, 'Ninguno'),
+      ),
+      help('Dentro de memorias y energía, lo que no es de ensamble (USB, flash, UPS…) se importa como tipo «otro»: vendible en venta individual, nunca en ensambles. Las promociones aplican como precio efectivo y quedan registradas.'),
+    );
     const marcaInput = el('input', {
       class: 'input',
       placeholder: 'Marca (opcional, p. ej. HP)',
@@ -231,7 +269,7 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     const cvaReport = lastCva
       ? el('div', {},
           el('p', { class: 'ok-note small' }, `${lastCva.at.toLocaleString('es-MX')} — ${lastCva.resumen}`),
-          renderImportReport(lastCva.hits, { supplier: 'CVA', zeroed: 0 }),
+          renderImportReport(lastCva.hits),
         )
       : null;
 
@@ -271,34 +309,34 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
         'Lista actual: ', el('strong', {}, info.source_file), ` · ${info.list_date}`),
       el('div', { class: 'card' },
         el('h3', {}, 'Excel del proveedor'),
+        el('p', { class: 'muted small' }, 'Actualiza precios y existencias de arroba o CVA por SKU.'),
         xlsxBtn,
         xlsxMsg,
         xlsxReport,
-        el('p', { class: 'muted small' },
-          'UPSERT por SKU: los existentes se actualizan conservando su identidad; los nuevos se agregan. Con arroba y CVA, los SKU ausentes quedan agotados (último precio visible). Las correcciones manuales no se pisan. Vendible = A-CEN + AVE-2 + CEDIS.'),
+        help('UPSERT por SKU: los existentes se actualizan conservando su identidad; los nuevos se agregan. Con arroba y CVA, los SKU ausentes quedan agotados (último precio visible). Las correcciones manuales no se pisan. Vendible = A-CEN + AVE-2 + CEDIS.'),
       ),
       el('div', { class: 'card' },
         el('h3', {}, 'Feed XML de CVA'),
         el('p', { class: 'muted small' },
-          'Importación directa del catálogo de CVA. Coloca tu número de cliente y recuerda dar de alta la IP de este equipo en el portal de CVA. El servicio solo responde de 19:01 a 08:59 h.'),
-        el('div', { class: 'form-row' }, el('label', {}, 'Número de cliente', feedCliente)),
-        feedMsg,
-        el('div', { class: 'form-actions' }, feedSave),
-        el('div', { class: 'form-title' }, 'Importar grupos de ensamble'),
-        el('p', { class: 'muted small' },
-          'Dentro de memorias y energía, lo que no es de ensamble (USB, flash, UPS…) se importa como tipo «otro»: vendible en venta individual, nunca en ensambles. Las promociones aplican como precio efectivo y quedan registradas.'),
-        el('div', { class: 'group-checks' },
-          ...groupChecks.map(({ name, box }) =>
-            el('label', { class: 'filter-check' }, box, ` ${name}`))),
+          'Importación directa del catálogo de CVA · el servicio solo responde de 19:01 a 08:59 h.'),
+        setOnce(cliente ? `Cliente ${cliente}` : null,
+          el('div', {},
+            el('div', { class: 'form-row' }, el('label', {}, 'Número de cliente', feedCliente)),
+            feedMsg,
+            el('div', { class: 'form-actions' }, feedSave),
+            help('La autenticación del feed es por IP: además del número de cliente, da de alta la IP de este equipo en el portal de CVA.'),
+          )),
+        groupsBox,
         el('div', { class: 'form-row' }, el('label', {}, 'Marca (opcional)', marcaInput)),
         cvaImportMsg,
         el('div', { class: 'form-actions' }, cvaImportBtn),
         cvaReport,
       ),
-      el('div', { class: 'card' },
-        el('h3', {}, 'Avanzado'),
+      // Uso raro: plegado para no competir con las listas de cada día.
+      el('details', { class: 'card card-fold' },
+        el('summary', {}, 'Avanzado: importar catálogo JSON'),
         el('p', { class: 'muted small' },
-          'Importar un catálogo JSON (mismo formato que catalog_seed.json). La base hace UPSERT por SKU.'),
+          'Mismo formato que catalog_seed.json. La base hace UPSERT por SKU.'),
         importBtn,
         importMsg,
       ),
@@ -366,25 +404,41 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     const catSel = el('select', { class: 'input' },
       ...CATALOGS.map((c) => el('option', { value: c.key }, c.label)),
     ) as HTMLSelectElement;
+    const valoresCount = el('div', { class: 'muted small' });
     const valoresBox = el('div', { class: 'catalog-values' });
-    const newValue = el('input', { class: 'input', placeholder: 'Nuevo valor' }) as HTMLInputElement;
+    const newValue = el('input', { class: 'input', placeholder: 'Escribe para buscar o agregar…' }) as HTMLInputElement;
+    const catAdd = el('button', { class: 'btn btn-outline' }, 'Agregar valor');
     const catMsg = el('p', { class: 'form-error' });
 
     async function refreshCatalogList() {
       valores = catalogoSel === 'marca'
         ? (await api.catalogFilters().catch(() => ({ brands: [] }))).brands
         : await api.listSpecOptions(catalogoSel).catch(() => []);
+      paintValues();
+    }
+    // «Nuevo valor» también filtra los chips: se ve si ya existe antes de
+    // agregarlo, y un catálogo grande (marcas) no se vuelve un muro.
+    function paintValues() {
+      const q = newValue.value.trim().toUpperCase();
+      const shown = q ? valores.filter((v) => v.toUpperCase().includes(q)) : valores;
+      const exists = q !== '' && valores.some((v) => v.toUpperCase() === q);
+      catAdd.disabled = q === '' || exists;
+      catAdd.textContent = exists ? 'Ya existe' : 'Agregar valor';
+      valoresCount.textContent = q
+        ? `${shown.length} de ${valores.length} valores`
+        : `${valores.length} valores`;
       valoresBox.replaceChildren(
-        ...valores.map((v) => el('span', { class: 'chip chip-supplier' }, v)),
-        valores.length === 0 ? el('span', { class: 'muted' }, 'Sin valores') : el('span'),
+        ...(shown.length
+          ? shown.map((v) => el('span', { class: 'chip chip-supplier' }, v))
+          : [el('span', { class: 'muted' }, q ? 'Sin coincidencias' : 'Sin valores')]),
       );
     }
+    newValue.addEventListener('input', paintValues);
     catSel.addEventListener('change', async () => {
       catalogoSel = catSel.value;
       await refreshCatalogList();
     });
 
-    const catAdd = el('button', { class: 'btn btn-outline' }, 'Agregar valor');
     catAdd.addEventListener('click', async () => {
       catMsg.textContent = '';
       const v = newValue.value.trim();
@@ -410,17 +464,18 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     return el('div', { class: 'settings-panel' },
       el('div', { class: 'card' },
         el('h3', {}, 'Catálogos del producto'),
-        el('p', { class: 'muted small' },
-          'Valores permitidos en los formularios de alta. Los imports de listas también registran automáticamente cualquier valor nuevo.'),
+        el('p', { class: 'muted small' }, 'Valores permitidos en los formularios de alta.'),
         el('div', { class: 'form-row' },
           el('label', {}, 'Catálogo', catSel),
         ),
+        valoresCount,
         valoresBox,
         el('div', { class: 'form-row' },
           el('label', {}, 'Nuevo valor', newValue),
           catAdd,
         ),
         catMsg,
+        help('Los imports de listas registran automáticamente cualquier valor nuevo; aquí se agregan a mano los que falten. Lo que escribas en «Nuevo valor» filtra la lista, para ver si ya existe.'),
       ),
     );
   }
@@ -441,8 +496,8 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
       zaiMsg.textContent = '';
       try {
         await api.setZaiKey(zaiKey.value.trim());
-        zaiMsg.className = 'ok-note';
-        zaiMsg.textContent = 'Clave guardada.';
+        // Se repinta para que la clave guardada quede resumida.
+        await render();
       } catch (e) {
         zaiMsg.textContent = String(e);
       }
@@ -468,11 +523,15 @@ export function createSettingsView(onChanged: () => void | Promise<void>): HTMLE
     return el('div', { class: 'settings-panel' },
       el('div', { class: 'card' },
         el('h3', {}, 'Títulos con IA (Z.ai)'),
-        el('p', { class: 'muted small' },
-          'Normaliza los títulos del catálogo en lotes de 100: cada corrida procesa solo los pendientes; los ya normalizados y los editados a mano quedan excluidos.'),
-        el('div', { class: 'form-row' }, el('label', {}, 'Clave API', zaiKey)),
+        el('p', { class: 'muted small' }, 'Normaliza los títulos del catálogo en lotes de 100.'),
+        setOnce(info.zai_key ? `Clave guardada ••••${info.zai_key.slice(-4)}` : null,
+          el('div', {},
+            el('div', { class: 'form-row' }, el('label', {}, 'Clave API', zaiKey)),
+            el('div', { class: 'form-actions' }, zaiSave),
+          )),
         zaiMsg,
-        el('div', { class: 'form-actions' }, zaiSave, zaiImprove),
+        el('div', { class: 'form-actions' }, zaiImprove),
+        help('Cada corrida procesa solo los pendientes; los ya normalizados y los editados a mano quedan excluidos. Vuelve a ejecutarlo para el siguiente lote.'),
       ),
     );
   }

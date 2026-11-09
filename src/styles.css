@@ -499,7 +499,6 @@ select.input { cursor: pointer; }
   font-size: 12px;
   color: var(--muted);
 }
-.form-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; width: 100%; }
 .form-error { color: var(--bad); font-size: 13px; min-height: 16px; margin: 0; }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
@@ -531,6 +530,26 @@ select.input { cursor: pointer; }
 .subnav-item.active { color: var(--accent); background: rgba(240, 180, 41, 0.12); font-weight: 600; }
 .settings-panel { display: flex; flex-direction: column; gap: 16px; }
 .settings-status { margin: 0; }
+/* Bloques plegables: ayuda, grupos CVA, informes de importación y avanzado. */
+details > summary { cursor: pointer; }
+details.help { margin-top: 8px; }
+details.help > summary {
+  list-style: none;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+}
+details.help > summary::-webkit-details-marker { display: none; }
+details.help > summary:hover { color: var(--text); }
+details.help > p { margin: 6px 0 0; }
+.group-details { margin: 8px 0 10px; }
+.group-details > summary { font-size: 13px; }
+.group-details .group-checks { margin-bottom: 6px; }
+.group-actions { display: flex; gap: 6px; }
+details.card-fold > summary { font-weight: 600; font-size: 15px; }
+details.card-fold[open] > summary { margin-bottom: 8px; }
+/* Ajuste ya guardado, resumido con «Cambiar». */
+.set-once { display: flex; align-items: center; gap: 10px; font-size: 13px; margin: 6px 0 10px; }
 .card {
   background: var(--bg-2);
   border: 1px solid var(--border);
@@ -800,6 +819,12 @@ select.input { cursor: pointer; }
   flex-wrap: wrap;
   gap: 6px;
   margin: 8px 0;
+  /* Catálogos grandes (marcas) no crecen sin fin: caja con scroll. */
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
 }
 
 /* ---------- Existencias: agotados, bloqueos y candados ---------- */
@@ -820,12 +845,11 @@ select.input { cursor: pointer; }
 .spec-locked { border-left: 2px solid var(--warn); padding-left: 8px; }
 .spec-lock-label { color: var(--warn); font-weight: 600; }
 
-/* Informe post-import */
+/* Informe post-import: la alerta es el <summary>; el detalle va plegado. */
 .import-report { border-radius: 10px; padding: 12px 16px; margin: 10px 0; }
-.import-report.ok { border: 1px solid rgba(80, 200, 120, 0.4); background: rgba(80, 200, 120, 0.06); }
 .import-report.warn { border: 1px solid rgba(229, 83, 75, 0.5); background: rgba(229, 83, 75, 0.06); }
-.import-report h4 { margin: 0 0 4px; }
-.report-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.import-report > summary { font-size: 13px; }
+.import-report[open] > summary { margin-bottom: 6px; }
 .report-row { border-top: 1px solid var(--border); padding: 8px 0; }
 .report-row.newly-out .report-comp .strong { color: var(--bad); }
 .report-comp { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
