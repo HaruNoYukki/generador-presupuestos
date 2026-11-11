@@ -248,9 +248,14 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
       const margin = 36;
       const w = pw - margin * 2;
       const h = (canvas.height / canvas.width) * w;
-      const img = canvas.toDataURL('image/png');
+      // El PDF lleva la hoja en JPEG: jsPDF incrusta los JPEG tal cual
+      // (DCTDecode), mientras que un PNG lo descomprime y lo vuelve a
+      // guardar como píxeles crudos (compression NONE) — PDFs de ~11 MB.
+      // Calidad 0.97 a escala 2: texto prácticamente perfecto.
+      const JPEG_Q = 0.97;
+      const img = canvas.toDataURL('image/jpeg', JPEG_Q);
       if (h <= ph - margin * 2) {
-        pdf.addImage(img, 'PNG', margin, margin, w, h);
+        pdf.addImage(img, 'JPEG', margin, margin, w, h);
       } else {
         // Multipágina: recorta el canvas en franjas del alto de página.
         const pageHpx = Math.floor(((ph - margin * 2) * canvas.width) / w);
@@ -265,7 +270,7 @@ export function createQuoteView(deps: QuoteViewDeps): HTMLElement {
             canvas, 0, y, canvas.width, sliceH, 0, 0, canvas.width, sliceH,
           );
           if (!first) pdf.addPage();
-          pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin, margin, w, (sliceH / canvas.width) * w);
+          pdf.addImage(slice.toDataURL('image/jpeg', JPEG_Q), 'JPEG', margin, margin, w, (sliceH / canvas.width) * w);
           first = false;
           y += sliceH;
         }
