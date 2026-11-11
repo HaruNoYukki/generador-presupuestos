@@ -235,20 +235,44 @@ export async function openProductForm(opts: ProductFormOptions): Promise<void> {
   ) as HTMLSelectElement;
   const supplierLabel = (s: string) =>
     s === 'cva' ? 'CVA' : s === 'arroba' ? '@ arroba' : s.toUpperCase();
+  // Si el producto importado aún no tiene oferta PCH, el selector ofrece
+  // «nueva captura»: al guardar se CREA (upsert en la base) sin tocar la
+  // oferta de lista. Precio vacío = obligatorio capturarlo.
+  const editOffers: Offer[] = editing ? [...initial.offers] : [];
+  if (editing && !editOffers.some((o) => o.supplier === 'pch')) {
+    editOffers.push({
+      supplier: 'pch',
+      price: { amount: '', currency: 'MXP' },
+      on_promotion: false,
+      stocks: {},
+      stock_label: '',
+      stock_ensamble: 0,
+      stock_individual: 0,
+      cd_only: false,
+      price_overridden: false,
+      stock_overridden: false,
+      list_price: null,
+      list_stock: null,
+    });
+  }
+  const offerOptionLabel = (o: Offer) =>
+    o.price.amount === ''
+      ? `${supplierLabel(o.supplier)} · nueva captura a mano`
+      : `${supplierLabel(o.supplier)} · ${money(o.price)}`;
   const supplierInfo = editing
-    ? initial.offers.length > 1
+    ? editOffers.length > 1
       ? el('select', { class: 'input' },
-          ...initial.offers.map((o) => el('option', {
+          ...editOffers.map((o) => el('option', {
             value: o.supplier,
             selected: o.supplier === selectedOffer?.supplier,
-          }, `${supplierLabel(o.supplier)} · ${money(o.price)}`)),
+          }, offerOptionLabel(o))),
         ) as HTMLSelectElement
       : el('span', { class: 'input input-readonly' },
           initial.offers.map((o) => supplierLabel(o.supplier)).join(', ') || 'sin oferta')
     : supplierSel;
-  if (editing && initial.offers.length > 1) {
+  if (editing && editOffers.length > 1) {
     (supplierInfo as HTMLSelectElement).addEventListener('change', () => {
-      selectedOffer = initial.offers.find((o) => o.supplier === (supplierInfo as HTMLSelectElement).value) ?? null;
+      selectedOffer = editOffers.find((o) => o.supplier === (supplierInfo as HTMLSelectElement).value) ?? null;
       loadOfferFields();
     });
   }

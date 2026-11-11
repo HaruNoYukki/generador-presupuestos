@@ -18,7 +18,7 @@ use crate::catalog::{Catalog, NewComponentInput, UpdateComponentInput};
 use crate::db;
 use crate::domain::assembly::{self, Assembly, ComponentLookup, QuoteType, Slot};
 use crate::domain::component::{Component, ComponentKind};
-use crate::domain::money::{ExchangeRate, Money};
+use crate::domain::money::{Currency, ExchangeRate, Money};
 
 /// Resultado de importar un Excel de proveedor.
 #[derive(Debug, Clone, Serialize)]
@@ -1167,34 +1167,54 @@ impl AppState {
         .map_err(|e| e.to_string())?;
 
         if let Some(supplier) = input.supplier.as_deref() {
-            let offer = existing
-                .offers
-                .iter()
-                .find(|o| o.supplier == supplier)
-                .ok_or_else(|| format!("El componente no tiene una oferta del proveedor {supplier}"))?;
-            let amount = match input.price_amount.as_deref() {
-                Some(a) => rust_decimal::Decimal::from_str_exact(a.trim())
-                    .map_err(|_| format!("Precio inválido: {a}"))?,
-                None => offer.price.amount,
-            };
-            if amount < rust_decimal::Decimal::ZERO {
-                return Err("El precio debe ser mayor o igual a cero".into());
-            }
-            let currency = input.price_currency.unwrap_or(offer.price.currency);
-            let money = Money::new(amount, currency);
-            let stock = input.stock.unwrap_or(offer.stock_ensamble);
-
+            let existing_offer = existing.offers.iter().find(|o| o.supplier == supplier);
             match supplier {
-                // Captura a mano (sin Excel): se escribe directo en la oferta.
+                // Captura a mano (sin Excel): se escribe directo en la
+                // oferta y, si el producto aún no la tiene (p. ej. registrar
+                // PCH sobre uno importado), se CREA — update_offer_manual es
+                // un upsert; la existencia va al almacén pch/manual_existencia.
                 "manual" | "pch" => {
+                    let amount = match input.price_amount.as_deref() {
+                        Some(a) => rust_decimal::Decimal::from_str_exact(a.trim())
+                            .map_err(|_| format!("Precio inválido: {a}"))?,
+                        None => existing_offer
+                            .map(|o| o.price.amount)
+                            .unwrap_or(rust_decimal::Decimal::ZERO),
+                    };
+                    if amount < rust_decimal::Decimal::ZERO {
+                        return Err("El precio debe ser mayor o igual a cero".into());
+                    }
+                    let currency = input
+                        .price_currency
+                        .or(existing_offer.map(|o| o.price.currency))
+                        .unwrap_or(Currency::Mxp);
+                    let money = Money::new(amount, currency);
+                    let stock = input
+                        .stock
+                        .unwrap_or_else(|| existing_offer.map(|o| o.stock_ensamble).unwrap_or(0));
                     db::update_offer_manual(&tx, &existing.sku, supplier, &money, stock)
                         .map_err(|e| e.to_string())?;
                 }
                 // Oferta de lista (arroba/cva/…): el Excel trae datos
                 // incompletos, así que se permite corregir. Solo se protege
                 // lo que difiere del valor vigente; si se deja igual a la
-                // lista, la próxima importación vuelve a mandar.
-                _ => {
+                // lista, la próxima importación vuelve a mandar. Debe existir:
+                // una corrección sobre una oferta que no está no tiene sentido.
+                supplier => {
+                    let offer = existing_offer.ok_or_else(|| {
+                        format!("El componente no tiene una oferta del proveedor {supplier}")
+                    })?;
+                    let amount = match input.price_amount.as_deref() {
+                        Some(a) => rust_decimal::Decimal::from_str_exact(a.trim())
+                            .map_err(|_| format!("Precio inválido: {a}"))?,
+                        None => offer.price.amount,
+                    };
+                    if amount < rust_decimal::Decimal::ZERO {
+                        return Err("El precio debe ser mayor o igual a cero".into());
+                    }
+                    let currency = input.price_currency.unwrap_or(offer.price.currency);
+                    let money = Money::new(amount, currency);
+                    let stock = input.stock.unwrap_or(offer.stock_ensamble);
                     let price_changed = money != offer.price;
                     let stock_changed = stock != offer.stock_ensamble;
                     if price_changed || stock_changed {
@@ -2055,6 +2075,56 @@ mod tests {
         let saved = reloaded.find_by_sku("USADA-GPU").unwrap();
         assert_eq!(saved.stock_ensamble_total, 7);
         assert_eq!(saved.price.amount, rust_decimal_macros::dec!(650));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Registrar la existencia de PCH sobre un SKU importado que aún no
+    /// tiene oferta PCH: la edición la CREA (upsert) sin tocar la oferta
+    /// de lista; una corrección sobre una oferta inexistente se rechaza.
+    #[test]
+    fn update_component_creates_pch_offer_over_imported_sku() {
+        let dir = temp_dir();
+        let mut state = AppState::load(Some(SEED), dir.clone());
+        let cpu = state.find_by_sku("100-100001582WOF").unwrap();
+        assert!(cpu.offers.iter().all(|o| o.supplier != "pch"), "el SKU importado no tiene oferta PCH");
+
+        // Captura PCH desde la edición del producto importado.
+        let mut input = edit_input(&cpu);
+        input.supplier = Some("pch".into());
+        input.price_amount = Some("300".into());
+        input.price_currency = Some(crate::domain::money::Currency::Mxp);
+        input.stock = Some(4);
+        let edited = state.update_component(cpu.id, input).unwrap();
+
+        let pch = edited
+            .offers
+            .iter()
+            .find(|o| o.supplier == "pch")
+            .expect("la oferta PCH debe crearse");
+        assert_eq!(pch.price.amount, rust_decimal_macros::dec!(300));
+        assert_eq!(pch.stock_ensamble, 4);
+        assert!(!pch.price_overridden, "es captura a mano, no override de lista");
+        assert!(!pch.stock_overridden);
+        // La oferta de lista queda intacta (sin overrides).
+        let arroba = edited.offers.iter().find(|o| o.supplier == "arroba").unwrap();
+        assert!(!arroba.price_overridden);
+        assert!(!arroba.stock_overridden);
+        assert_eq!(arroba.list_price, None);
+
+        // Sobrevive a la recarga de la app.
+        let reloaded = AppState::load(Some(SEED), dir.clone());
+        let saved = reloaded.find_by_sku("100-100001582WOF").unwrap();
+        let pch = saved.offers.iter().find(|o| o.supplier == "pch").unwrap();
+        assert_eq!(pch.stock_ensamble, 4, "la existencia PCH se persiste");
+
+        // Una oferta de lista que NO existe se sigue rechazando.
+        let mut input = edit_input(&saved);
+        input.supplier = Some("fantasma".into());
+        input.price_amount = Some("1".into());
+        assert!(
+            state.update_component(saved.id, input).is_err(),
+            "corregir una oferta de lista inexistente debe fallar"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
