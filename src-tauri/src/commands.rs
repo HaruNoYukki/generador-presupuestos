@@ -1,5 +1,11 @@
 //! Comandos Tauri: frontera del monolito hacia la interfaz gráfica.
 //! Capa delgada: delegan en el catálogo y el estado, y arman DTOs.
+//!
+//! Todos los comandos llevan `#[tauri::command(async)]`: en Tauri v2 los
+//! comandos síncronos corren en el hilo principal y congelarían la ventana
+//! durante imports, refresh del feed o serialización de catálogos grandes.
+//! Con el atributo cada handler corre en un hilo del runtime y la UI
+//! sigue respondiendo; el Mutex de `SharedState` mantiene la exclusión.
 
 use serde::Serialize;
 use tauri::State;
@@ -38,7 +44,7 @@ pub struct CatalogOverview {
     pub counts_by_kind: std::collections::HashMap<String, usize>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn catalog_overview(state: State<'_, SharedState>) -> CmdResult<CatalogOverview> {
     let s = state.0.lock().unwrap();
     Ok(CatalogOverview {
@@ -55,7 +61,7 @@ pub fn catalog_overview(state: State<'_, SharedState>) -> CmdResult<CatalogOverv
 
 /// `include_other`: incluye los productos tipo «otro» (no ensambles) —
 /// la venta individual vende cualquier cosa con existencias.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_components(
     state: State<'_, SharedState>,
     kind: Option<String>,
@@ -76,7 +82,7 @@ pub fn list_components(
         .collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_component(state: State<'_, SharedState>, id: String) -> CmdResult<ComponentDto> {
     let s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
@@ -87,7 +93,7 @@ pub fn get_component(state: State<'_, SharedState>, id: String) -> CmdResult<Com
     Ok(dto(c, &s.rate()))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_manual_component(
     state: State<'_, SharedState>,
     input: NewComponentInput,
@@ -98,7 +104,7 @@ pub fn add_manual_component(
     Ok(dto(&c, &rate))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn remove_manual_component(state: State<'_, SharedState>, id: String) -> CmdResult<bool> {
     let mut s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
@@ -108,7 +114,7 @@ pub fn remove_manual_component(state: State<'_, SharedState>, id: String) -> Cmd
 /// Edita un componente existente desde el catálogo (maestro siempre;
 /// precio/existencia de la oferta indicada — en ofertas de lista queda
 /// como corrección protegida del import).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_component(
     state: State<'_, SharedState>,
     id: String,
@@ -123,7 +129,7 @@ pub fn update_component(
 
 /// Quita la corrección manual de una oferta de lista ("usar lista"):
 /// vuelve a mandar el valor de la última importación.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_offer_override(
     state: State<'_, SharedState>,
     id: String,
@@ -146,7 +152,7 @@ pub struct CvaFeedConfigDto {
     pub configured: bool,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_cva_feed_config(state: State<'_, SharedState>) -> CmdResult<CvaFeedConfigDto> {
     let s = state.0.lock().unwrap();
     let cfg = crate::cva_feed::get_config(&s.db()).unwrap_or_default();
@@ -157,7 +163,7 @@ pub fn get_cva_feed_config(state: State<'_, SharedState>) -> CmdResult<CvaFeedCo
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_cva_feed_config(
     state: State<'_, SharedState>,
     config: crate::cva_feed::FeedConfig,
@@ -166,7 +172,7 @@ pub fn set_cva_feed_config(
     crate::cva_feed::set_config(&s.db(), &config)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cva_feed_query(
     state: State<'_, SharedState>,
     sku: String,
@@ -193,7 +199,7 @@ pub struct CvaImportSummary {
 /// se consultan como `%<grupo>%`). Con `grupos` vacío importa TODO el
 /// catálogo (`grupo=%`) — solo sirve en el horario 19:01–08:59 y SÍ barre
 /// existencias de los SKU ausentes; los importes parciales no barren.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_catalog_cva(
     state: State<'_, SharedState>,
     grupos: Vec<String>,
@@ -226,7 +232,7 @@ pub struct RateInfo {
     pub zai_key: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_rate(state: State<'_, SharedState>) -> CmdResult<RateInfo> {
     let s = state.0.lock().unwrap();
     Ok(RateInfo {
@@ -241,7 +247,7 @@ pub fn get_rate(state: State<'_, SharedState>) -> CmdResult<RateInfo> {
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_rate(state: State<'_, SharedState>, rate: String) -> CmdResult<RateInfo> {
     let mut s = state.0.lock().unwrap();
     let parsed = rust_decimal::Decimal::from_str_exact(&rate)
@@ -302,13 +308,13 @@ fn summarize(asm: &Assembly, state: &AppState) -> AssemblySummary {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_assemblies(state: State<'_, SharedState>) -> CmdResult<Vec<AssemblySummary>> {
     let s = state.0.lock().unwrap();
     Ok(s.assemblies().iter().map(|a| summarize(a, &s)).collect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_assembly(
     state: State<'_, SharedState>,
     name: String,
@@ -324,7 +330,7 @@ pub fn create_assembly(
 }
 
 /// Duplica un ensamble (normalmente preensamble) como PERSONALIZADO.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn duplicate_assembly(state: State<'_, SharedState>, id: String) -> CmdResult<Assembly> {
     let mut s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
@@ -332,7 +338,7 @@ pub fn duplicate_assembly(state: State<'_, SharedState>, id: String) -> CmdResul
 }
 
 /// Marca o desmarca la cotización como "en fabricación".
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_fabrication(
     state: State<'_, SharedState>,
     id: String,
@@ -344,21 +350,21 @@ pub fn set_fabrication(
 }
 
 /// Asigna el folio de cotización del día (DDMMAA-NC) y lo liga al ensamble.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assign_quote_number(state: State<'_, SharedState>, id: String) -> CmdResult<String> {
     let mut s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
     s.assign_quote_number(id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_assembly(state: State<'_, SharedState>, id: String) -> CmdResult<Assembly> {
     let s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
     s.assembly(id).cloned().ok_or_else(|| "Ensamble no encontrado".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_assembly(
     state: State<'_, SharedState>,
     id: String,
@@ -369,14 +375,14 @@ pub fn rename_assembly(
     s.rename_assembly(id, name).ok_or_else(|| "Ensamble no encontrado".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_assembly(state: State<'_, SharedState>, id: String) -> CmdResult<bool> {
     let mut s = state.0.lock().unwrap();
     let id = parse_uuid(&id)?;
     Ok(s.delete_assembly(id))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_assembly_item(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -392,7 +398,7 @@ pub fn set_assembly_item(
     s.set_assembly_item(assembly_id, slot, component_id, quantity, supplier)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_assembly_slot(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -404,7 +410,7 @@ pub fn clear_assembly_slot(
     s.clear_assembly_slot(assembly_id, slot)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn validate_assembly(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -416,7 +422,7 @@ pub fn validate_assembly(
 }
 
 /// Desglose de costo del ensamble: subtotal en pesos, IVA 16% y total.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assembly_cost(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -431,14 +437,14 @@ pub fn assembly_cost(
 }
 
 /// Asigna y devuelve el número de cotización del día (DDMMAA-NC).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn next_quote_number(state: State<'_, SharedState>) -> CmdResult<String> {
     let mut s = state.0.lock().unwrap();
     Ok(s.next_quote_number())
 }
 
 /// Guarda bytes (PNG/PDF) en la ruta dada por el diálogo de guardado.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_export(
     state: State<'_, SharedState>,
     path: String,
@@ -455,7 +461,7 @@ pub fn save_export(
 
 /// Importa un catálogo JSON (formato catalog_seed.json) con UPSERT por
 /// SKU: actualiza los existentes (conservando id) e inserta los nuevos.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_catalog(
     state: State<'_, SharedState>,
     path: String,
@@ -492,7 +498,7 @@ pub struct XlsxImportSummary {
     pub out_of_stock: Vec<OutOfStockHit>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_catalog_xlsx(
     state: State<'_, SharedState>,
     path: String,
@@ -516,7 +522,7 @@ pub struct CatalogFilters {
     pub departments: Vec<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn catalog_filters(state: State<'_, SharedState>) -> CmdResult<CatalogFilters> {
     let s = state.0.lock().unwrap();
     Ok(CatalogFilters {
@@ -526,13 +532,13 @@ pub fn catalog_filters(state: State<'_, SharedState>) -> CmdResult<CatalogFilter
 }
 
 /// Guarda/lee la clave API de Z.ai (para el formateo asistido de títulos).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_zai_key(state: State<'_, SharedState>, key: String) -> CmdResult<()> {
     let s = state.0.lock().unwrap();
     crate::db::set_setting(&s.db(), "zai_api_key", &key).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_zai_key(state: State<'_, SharedState>) -> CmdResult<String> {
     let s = state.0.lock().unwrap();
     Ok(s.db_query_zai())
@@ -546,7 +552,7 @@ pub struct AiTitlesSummary {
     pub remaining: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_normalize_titles(
     state: State<'_, SharedState>,
     limit: u32,
@@ -558,7 +564,7 @@ pub fn ai_normalize_titles(
 
 /// Valores de un catálogo de atributo normalizado (socket, ddr,
 /// form_factor, ram_form).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_spec_options(
     state: State<'_, SharedState>,
     kind: String,
@@ -568,7 +574,7 @@ pub fn list_spec_options(
 }
 
 /// Agrega un valor nuevo a un catálogo de atributo. Solo tipos conocidos.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_spec_option(
     state: State<'_, SharedState>,
     kind: String,
@@ -587,14 +593,14 @@ pub fn add_spec_option(
 }
 
 /// Agrega una marca nueva al catálogo de marcas.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn add_brand(state: State<'_, SharedState>, name: String) -> CmdResult<()> {
     let s = state.0.lock().unwrap();
     crate::db::add_brand(&s.db(), name.trim()).map_err(|e| e.to_string())
 }
 
 /// Consulta principal de productos: por SKU (único).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_component_by_sku(
     state: State<'_, SharedState>,
     sku: String,
@@ -604,7 +610,7 @@ pub fn get_component_by_sku(
 }
 
 /// Asigna el número de nota de venta del día (DDMMAAAA-NC).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn next_sale_note_number(state: State<'_, SharedState>) -> CmdResult<String> {
     let mut s = state.0.lock().unwrap();
     Ok(s.next_sale_note_number())
@@ -612,7 +618,7 @@ pub fn next_sale_note_number(state: State<'_, SharedState>) -> CmdResult<String>
 
 /// Registra la nota de venta emitida con sus números de serie. El ensamble
 /// es opcional: NULL en ventas individuales.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn record_sale_note(
     state: State<'_, SharedState>,
     number: String,
@@ -641,7 +647,7 @@ pub fn record_sale_note(
 
 /// Ganancia del carrito de venta individual: mismas reglas que ensambles
 /// (presets, IVA recalculado con el objetivo).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cart_profit(
     state: State<'_, SharedState>,
     items: Vec<crate::domain::cart::CartItem>,
@@ -673,14 +679,14 @@ pub fn cart_profit(
 }
 
 /// Lista las notas de venta emitidas.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_sale_notes(state: State<'_, SharedState>) -> CmdResult<Vec<crate::domain::sale::SaleNoteRecord>> {
     let s = state.0.lock().unwrap();
     Ok(s.sale_notes().to_vec())
 }
 
 /// Confirma el ensamble (debe estar completo) y lo guarda como cotización.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn confirm_assembly(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -692,7 +698,7 @@ pub fn confirm_assembly(
 
 /// Renueva un preensamble caducado: re-fecha la vigencia y limpia la
 /// confirmación para obligar a re-confirmar con los precios nuevos.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn renew_assembly(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -704,7 +710,7 @@ pub fn renew_assembly(
 
 /// Actualiza precios/existencias de los componentes CVA del preensamble
 /// consultando el feed XML SKU por SKU.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn refresh_assembly_feed(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -717,7 +723,7 @@ pub fn refresh_assembly_feed(
 
 /// Tabla de ganancias por componente con el porcentaje dado y, opcionalmente,
 /// un precio objetivo (total con IVA) que ajusta la ganancia en partes iguales.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn assembly_profit(
     state: State<'_, SharedState>,
     assembly_id: String,
@@ -750,7 +756,7 @@ pub fn assembly_profit(
 }
 
 /// Convierte un monto con la regla de la casa (T.C redondeado hacia arriba).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn convert_money(
     state: State<'_, SharedState>,
     amount: String,
