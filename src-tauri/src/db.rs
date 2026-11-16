@@ -35,6 +35,14 @@ pub fn open(dir: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(dir.join(DB_FILE))?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // Rendimiento local: con WAL, NORMAL sincroniza solo en checkpoints
+    // (sin fsync por escritura) manteniendo la consistencia ante caídas de
+    // la app. temp_store en RAM y cache generosa aceleran imports masivos;
+    // mmap evita copias al leer el catálogo completo al arranque.
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "cache_size", -8000_i64)?; // 8 MB de páginas
+    conn.pragma_update(None, "mmap_size", 268_435_456_i64)?; // 256 MB
     migrate(&conn)?;
     Ok(conn)
 }
