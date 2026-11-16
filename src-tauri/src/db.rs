@@ -611,15 +611,12 @@ fn migrate_v6_title_source(conn: &Connection) -> rusqlite::Result<()> {
 // ---------------------------------------------------------------------
 
 fn catalog_id(conn: &Connection, table: &str, name: &str) -> rusqlite::Result<i64> {
-    conn.execute(
-        &format!("INSERT OR IGNORE INTO {table} (name) VALUES (?1)"),
-        params![name],
-    )?;
-    conn.query_row(
-        &format!("SELECT id FROM {table} WHERE name = ?1"),
-        params![name],
-        |r| r.get(0),
-    )
+    // prepare_cached: en imports masivos se llama miles de veces por tabla;
+    // el statement queda cacheado por conexión y se evita re-parsear el SQL.
+    let mut ins = conn.prepare_cached(&format!("INSERT OR IGNORE INTO {table} (name) VALUES (?1)"))?;
+    ins.execute(params![name])?;
+    let mut sel = conn.prepare_cached(&format!("SELECT id FROM {table} WHERE name = ?1"))?;
+    sel.query_row(params![name], |r| r.get(0))
 }
 
 /// Valores registrados de un atributo normalizado (socket, ddr,
@@ -634,10 +631,10 @@ pub fn list_spec_options(conn: &Connection, kind: &str) -> rusqlite::Result<Vec<
 
 /// Agrega un valor a un atributo normalizado (idempotente).
 pub fn add_spec_option(conn: &Connection, kind: &str, value: &str) -> rusqlite::Result<bool> {
-    let n = conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT OR IGNORE INTO spec_options (kind, value) VALUES (?1, ?2)",
-        params![kind, value],
     )?;
+    let n = stmt.execute(params![kind, value])?;
     Ok(n > 0)
 }
 
@@ -694,7 +691,7 @@ pub fn upsert_master(conn: &Connection, c: &Component, update_details: bool) -> 
     let dept_id = catalog_id(conn, "departments", &c.department)?;
     let specs = serde_json::to_string(&c.specs).unwrap_or_else(|_| "{}".into());
     register_spec_values(conn, &c.specs);
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO products (id, sku, barcode, description, brand_id, department_id,
              kind, condition, specs, title_source, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'raw', datetime('now'))
@@ -708,19 +705,19 @@ pub fn upsert_master(conn: &Connection, c: &Component, update_details: bool) -> 
             title_source   = CASE WHEN ?10 AND excluded.description != products.description
                                   THEN 'raw' ELSE products.title_source END,
             updated_at     = datetime('now')",
-        params![
-            c.id.to_string(),
-            c.sku,
-            c.barcode,
-            c.description,
-            brand_id,
-            dept_id,
-            serde_json::to_value(c.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-            serde_json::to_value(c.condition).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-            specs,
-            update_details,
-        ],
     )?;
+    stmt.execute(params![
+        c.id.to_string(),
+        c.sku,
+        c.barcode,
+        c.description,
+        brand_id,
+        dept_id,
+        serde_json::to_value(c.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        serde_json::to_value(c.condition).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        specs,
+        update_details,
+    ])?;
     Ok(())
 }
 
@@ -728,7 +725,7 @@ pub fn upsert_master(conn: &Connection, c: &Component, update_details: bool) -> 
 /// desglose de existencias por almacén (3FN). Clave de conflicto:
 /// (sku, supplier).
 pub fn upsert_offer(conn: &Connection, c: &Component) -> rusqlite::Result<()> {
-    conn.execute(
+    let mut up = conn.prepare_cached(
         "INSERT INTO product_offers (sku, supplier, barcode, price_amount, price_currency,
             on_promotion, cd_only, updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7, datetime('now'))
@@ -739,30 +736,30 @@ pub fn upsert_offer(conn: &Connection, c: &Component) -> rusqlite::Result<()> {
             on_promotion    = excluded.on_promotion,
             cd_only         = excluded.cd_only,
             updated_at      = datetime('now')",
-        params![
-            c.sku,
-            c.supplier,
-            c.barcode,
-            c.price.amount.to_string(),
-            serde_json::to_value(c.price.currency).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-            c.on_promotion as i64,
-            c.cd_only_best as i64,
-        ],
     )?;
-    conn.execute(
+    up.execute(params![
+        c.sku,
+        c.supplier,
+        c.barcode,
+        c.price.amount.to_string(),
+        serde_json::to_value(c.price.currency).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        c.on_promotion as i64,
+        c.cd_only_best as i64,
+    ])?;
+    let mut del = conn.prepare_cached(
         "DELETE FROM offer_stock WHERE sku = ?1 AND supplier = ?2",
-        params![c.sku, c.supplier],
+    )?;
+    del.execute(params![c.sku, c.supplier])?;
+    let mut ins = conn.prepare_cached(
+        "INSERT INTO offer_stock (sku, supplier, warehouse_id, quantity)
+         VALUES (?1,?2,?3,?4)",
     )?;
     for (warehouse, qty) in &c.offer_stocks {
         if *qty == 0 {
             continue;
         }
         let wid: i64 = catalog_id(conn, "warehouses", warehouse)?;
-        conn.execute(
-            "INSERT INTO offer_stock (sku, supplier, warehouse_id, quantity)
-             VALUES (?1,?2,?3,?4)",
-            params![c.sku, c.supplier, wid, *qty as i64],
-        )?;
+        ins.execute(params![c.sku, c.supplier, wid, *qty as i64])?;
     }
     Ok(())
 }
@@ -1435,7 +1432,7 @@ pub fn count_raw_title_candidates(conn: &Connection) -> i64 {
 // ---------------------------------------------------------------------
 
 pub fn upsert_assembly(conn: &Connection, a: &Assembly) -> rusqlite::Result<()> {
-    conn.execute(
+    let mut up = conn.prepare_cached(
         "INSERT INTO assemblies (id, name, created_at, updated_at, confirmed_at,
             quote_type, in_fabrication, quote_number, based_on)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
@@ -1448,35 +1445,35 @@ pub fn upsert_assembly(conn: &Connection, a: &Assembly) -> rusqlite::Result<()> 
             in_fabrication = excluded.in_fabrication,
             quote_number = excluded.quote_number,
             based_on = excluded.based_on",
-        params![
-            a.id.to_string(),
-            a.name,
-            a.created_at.to_rfc3339(),
-            a.updated_at.to_rfc3339(),
-            a.confirmed_at.map(|d| d.to_rfc3339()),
-            serde_json::to_value(a.quote_type).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-            a.in_fabrication as i64,
-            a.quote_number,
-            a.based_on,
-        ],
     )?;
-    conn.execute(
+    up.execute(params![
+        a.id.to_string(),
+        a.name,
+        a.created_at.to_rfc3339(),
+        a.updated_at.to_rfc3339(),
+        a.confirmed_at.map(|d| d.to_rfc3339()),
+        serde_json::to_value(a.quote_type).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+        a.in_fabrication as i64,
+        a.quote_number,
+        a.based_on,
+    ])?;
+    let mut del = conn.prepare_cached(
         "DELETE FROM assembly_items WHERE assembly_id = ?1",
-        params![a.id.to_string()],
+    )?;
+    del.execute(params![a.id.to_string()])?;
+    let mut ins = conn.prepare_cached(
+        "INSERT INTO assembly_items (assembly_id, slot, component_id, quantity, supplier)
+         VALUES (?1,?2,?3,?4,?5)",
     )?;
     for (slot, items) in &a.slots {
         for item in items {
-            conn.execute(
-                "INSERT INTO assembly_items (assembly_id, slot, component_id, quantity, supplier)
-                 VALUES (?1,?2,?3,?4,?5)",
-                params![
-                    a.id.to_string(),
-                    serde_json::to_value(slot).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
-                    item.component_id.to_string(),
-                    item.quantity as i64,
-                    item.supplier,
-                ],
-            )?;
+            ins.execute(params![
+                a.id.to_string(),
+                serde_json::to_value(slot).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                item.component_id.to_string(),
+                item.quantity as i64,
+                item.supplier,
+            ])?;
         }
     }
     Ok(())
@@ -1664,11 +1661,11 @@ pub fn load_sale_notes(conn: &Connection) -> rusqlite::Result<Vec<SaleNoteRecord
 // ---------------------------------------------------------------------
 
 pub fn set_counter(conn: &Connection, scope: &str, day: &str, value: i64) -> rusqlite::Result<()> {
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO counters (scope, day, value) VALUES (?1,?2,?3)
          ON CONFLICT(scope, day) DO UPDATE SET value = excluded.value",
-        params![scope, day, value],
     )?;
+    stmt.execute(params![scope, day, value])?;
     Ok(())
 }
 
@@ -1693,11 +1690,11 @@ pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
 }
 
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
-    conn.execute(
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO settings (key, value) VALUES (?1,?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![key, value],
     )?;
+    stmt.execute(params![key, value])?;
     Ok(())
 }
 
