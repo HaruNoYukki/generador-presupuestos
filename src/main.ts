@@ -1,5 +1,5 @@
 // Punto de entrada de la interfaz gráfica.
-import { api } from './api';
+import { api, clearCatalogFiltersCache } from './api';
 import { Assembly } from './types';
 import { createAssemblyView } from './views/assembly';
 import { createCatalogView } from './views/catalog';
@@ -223,6 +223,9 @@ async function refreshComponents(): Promise<ComponentDto[]> {
   // Incluye los tipo «otro»: la venta individual vende cualquier cosa y el
   // picker de ensambles los descarta por kinds del slot.
   const fresh = await api.listComponents(true);
+  // Tras un import o alta manual pueden existir marcas nuevas: invalida la
+  // memoización de filtros para que el picker las vea.
+  clearCatalogFiltersCache();
   state.components.length = 0;
   state.components.push(...fresh);
   return state.components;
@@ -242,8 +245,14 @@ function setTab(tab: Tab) {
 }
 
 async function boot() {
-  state.overview = await api.catalogOverview();
-  state.components = await api.listComponents(true);
+  // Ambas lecturas son independientes: una sola tanda en paralelo en lugar
+  // de dos idas y vueltas serializadas al arranque.
+  const [overview, components] = await Promise.all([
+    api.catalogOverview(),
+    api.listComponents(true),
+  ]);
+  state.overview = overview;
+  state.components = components;
   renderShell();
 }
 

@@ -25,6 +25,15 @@ export async function call<T>(cmd: string, args?: Record<string, unknown>): Prom
   return mockInvoke(cmd, args) as Promise<T>;
 }
 
+// Marcas y departamentos cambian solo al importar listas o dar de alta
+// marcas: se memoizan para que abrir el picker o la venta individual no
+// pague una ida y vuelta cada vez. Invalidar con clearCatalogFiltersCache.
+let filtersCache: Promise<{ brands: string[]; departments: string[] }> | null = null;
+
+export function clearCatalogFiltersCache(): void {
+  filtersCache = null;
+}
+
 export interface NewManualComponent {
   description: string;
   sku?: string | null;
@@ -58,15 +67,25 @@ export interface UpdateComponentInput {
 export const api = {
   catalogOverview: () => call<CatalogOverview>('catalog_overview'),
 
-  catalogFilters: () =>
-    call<{ brands: string[]; departments: string[] }>('catalog_filters'),
+  catalogFilters: () => {
+    if (!filtersCache) {
+      filtersCache = call<{ brands: string[]; departments: string[] }>('catalog_filters')
+        .catch((e) => {
+          // No perpetuar un fallo: la siguiente llamada reintenta.
+          filtersCache = null;
+          throw e;
+        });
+    }
+    return filtersCache;
+  },
 
   listSpecOptions: (kind: string) => call<string[]>('list_spec_options', { kind }),
 
   addSpecOption: (kind: string, value: string) =>
     call<boolean>('add_spec_option', { kind, value }),
 
-  addBrand: (name: string) => call<void>('add_brand', { name }),
+  addBrand: (name: string) =>
+    call<void>('add_brand', { name }).then(() => clearCatalogFiltersCache()),
 
   getZaiKey: () => call<string>('get_zai_key'),
 
