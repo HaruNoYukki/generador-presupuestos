@@ -124,7 +124,13 @@ export function createSaleDirectView(deps: SaleDirectDeps): HTMLElement {
           : el('span'),
       );
     }
-    input.addEventListener('input', runSearch);
+    // Debounce: filtrar el catálogo completo en cada pulsación se siente
+    // lagged con listas grandes; se repinta 120 ms tras la última tecla.
+    let debounce = 0;
+    input.addEventListener('input', () => {
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(runSearch, 120);
+    });
     return el('div', {},
       el('div', { class: 'toolbar' }, brandSel, input),
       results,

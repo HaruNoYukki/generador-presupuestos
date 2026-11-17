@@ -30,6 +30,9 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
   let current: Assembly | null = null;
   let report: ValidationReport | null = null;
   let cost: CostBreakdown | null = null;
+  // Mapa id→componente del render en curso: construirlo una vez por
+  // render en vez de uno por slot (el catálogo puede tener miles de SKUs).
+  let idMap: Map<string, ComponentDto> | null = null;
 
   const byId = () => {
     const map = new Map<string, ComponentDto>();
@@ -74,7 +77,31 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       view.prepend(banner);
       window.setTimeout(() => banner.remove(), 6000);
     }
-    await loadAssemblies(assemblyId ?? current?.id);
+    const id = assemblyId ?? current?.id;
+    if (!id) {
+      await loadAssemblies();
+      return;
+    }
+    // Una sola tanda en paralelo en lugar de list → get → validate → cost
+    // serializados: cada clic repinta tras ~1 ida y vuelta, no tras 4.
+    const [list, fresh, rep, cst] = await Promise.all([
+      api.listAssemblies(),
+      api.getAssembly(id).catch(() => null),
+      api.validateAssembly(id).catch(() => null),
+      api.assemblyCost(id).catch(() => null),
+    ]);
+    assemblies = list;
+    if (!fresh) {
+      // Raro (solo esta vista borra ensambles y no vía mutate): mismo
+      // manejo que loadAssemblies — busca el objetivo o toma el primero.
+      await loadAssemblies(id);
+      return;
+    }
+    current = fresh;
+    report = rep ?? null;
+    cost = cst ?? null;
+    deps.onSelected?.(current);
+    render();
   }
 
   /** Existencia para ensamble del renglón: la oferta fijada o la suma. */
@@ -349,7 +376,14 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       resetPageAndDraw();
       search.focus();
     });
-    search.addEventListener('input', resetPageAndDraw);
+    // Debounce: repintar la lista 120 ms tras la última tecla en vez de en
+    // cada pulsación (el filtro barre todo el catálogo del slot).
+    let searchDebounce = 0;
+    const resetDebounced = () => {
+      window.clearTimeout(searchDebounce);
+      searchDebounce = window.setTimeout(resetPageAndDraw, 120);
+    };
+    search.addEventListener('input', resetDebounced);
     search.addEventListener('change', resetPageAndDraw);
 
     // Alta de productos desde el propio picker (p. ej. captura manual de
@@ -388,7 +422,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
   // ------------------------------------------------------------------
   function renderSlot(slot: SlotMeta) {
     const items = current?.slots[slot.id] ?? [];
-    const map = byId();
+    const map = idMap ?? byId();
     const filled = items.length > 0;
 
     const body = el('div', { class: 'slot-items' });
@@ -571,7 +605,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
    * Excel), así que hay que verificarla manualmente. */
   function renderPchWarning() {
     if (!current) return null;
-    const map = byId();
+    const map = idMap ?? byId();
     const pchItems: { description: string; sku: string }[] = [];
     for (const items of Object.values(current.slots)) {
       for (const item of items ?? []) {
@@ -1000,6 +1034,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
 
   function render() {
     if (!current) {
+      idMap = null;
       view.replaceChildren(
         renderHeader(),
         el('div', { class: 'panel-muted' },
@@ -1007,6 +1042,7 @@ export function createAssemblyView(deps: AssemblyViewDeps): HTMLElement {
       );
       return;
     }
+    idMap = byId();
     view.replaceChildren(
       renderHeader(),
       el('div', { class: 'assembly-grid' },
